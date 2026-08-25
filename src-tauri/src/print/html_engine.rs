@@ -299,7 +299,7 @@ fn inject_page_size(webview: &ICoreWebView2, paper_mm: u32, height_mm: f64) -> R
   if (old) old.remove();
   var s = document.createElement('style');
   s.id = 'finvoroo-page-size';
-  s.textContent = '@page {{ size: {paper_mm}mm {height_mm:.2f}mm; margin: 2mm; }}'
+  s.textContent = '@page {{ size: {paper_mm}mm {height_mm:.2}mm; margin: 2mm; }}'
     + 'html, body, #pos-receipt-print, .thermal-receipt-body {{'
     + 'page-break-inside: auto !important; break-inside: auto !important; }}'
     + 'html.print-thermal-receipt-only body, html.print-thermal-receipt-only body * {{'
