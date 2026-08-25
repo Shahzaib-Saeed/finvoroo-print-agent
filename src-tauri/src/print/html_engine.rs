@@ -13,11 +13,11 @@ use anyhow::{bail, Context, Result};
 use once_cell::sync::OnceCell;
 use webview2_com::{
     CoTaskMemPWSTR, CreateCoreWebView2ControllerCompletedHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, Microsoft::Web::WebView2::Win32::*,
-    NavigationCompletedEventHandler, PrintCompletedHandler,
+    CreateCoreWebView2EnvironmentCompletedHandler, ExecuteScriptCompletedHandler,
+    Microsoft::Web::WebView2::Win32::*, NavigationCompletedEventHandler, PrintCompletedHandler,
 };
 use windows::core::{w, Interface, BOOL};
-use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW, ShowWindow,
@@ -91,6 +91,13 @@ fn engine_thread_main(rx: mpsc::Receiver<HtmlPrintJob>) -> Result<()> {
     let hwnd = unsafe { create_hidden_window()? };
     let handles = unsafe { create_webview(hwnd)? };
     unsafe {
+        // Tall viewport so long receipts layout at full height before we measure them.
+        handles.controller.SetBounds(RECT {
+            left: 0,
+            top: 0,
+            right: 400,
+            bottom: 8000,
+        })?;
         handles.controller.SetIsVisible(false)?;
         let _ = ShowWindow(hwnd, SW_HIDE);
     }
@@ -122,7 +129,7 @@ fn render_and_print(
     }
 
     wait_navigation(&handles.webview, html)?;
-    thread::sleep(Duration::from_millis(80));
+    thread::sleep(Duration::from_millis(120));
     silent_print(&handles.env, &handles.webview, printer, paper_mm)
 }
 
@@ -189,19 +196,35 @@ fn silent_print(
         .cast()
         .context("WebView2 printer settings (ICoreWebView2PrintSettings2) are unavailable")?;
 
+    let margin_in = if paper_mm <= 58 { 0.08 } else { 0.12 };
+    let width_in = (paper_mm as f64) / 25.4;
+    // Chrome uses `@page { size: 80mm auto }`. WebView2 ignores `auto` and defaults
+    // to Letter (~11in), so leftover lines become a second slip and the cutter fires
+    // between pages. Size the page to the rendered receipt plus cutter feed.
+    let content_px = measure_content_height_px(webview).unwrap_or_else(|err| {
+        tracing::warn!("html print height measure failed ({err:#}); using 22in fallback");
+        22.0 * 96.0
+    });
+    let content_in = (content_px / 96.0).max(1.0);
+    let cutter_in = 10.0 / 25.4;
+    let page_height_in = (content_in + margin_in * 2.0 + cutter_in).min(80.0);
+
     unsafe {
         let printer_name = CoTaskMemPWSTR::from(printer);
         settings2.SetPrinterName(*printer_name.as_ref().as_pcwstr())?;
+        let _ = settings2.SetMediaSize(COREWEBVIEW2_PRINT_MEDIA_SIZE_CUSTOM);
+        let _ = settings2.SetCopies(1);
         if let Ok(base) = settings.cast::<ICoreWebView2PrintSettings>() {
+            let _ = base.SetOrientation(COREWEBVIEW2_PRINT_ORIENTATION_PORTRAIT);
+            let _ = base.SetScaleFactor(1.0);
             let _ = base.SetShouldPrintBackgrounds(true);
             let _ = base.SetShouldPrintHeaderAndFooter(false);
-            let margin_in = if paper_mm <= 58 { 0.08 } else { 0.12 };
             let _ = base.SetMarginTop(margin_in);
             let _ = base.SetMarginBottom(margin_in);
             let _ = base.SetMarginLeft(margin_in);
             let _ = base.SetMarginRight(margin_in);
-            let width_in = (paper_mm as f64) / 25.4;
             let _ = base.SetPageWidth(width_in);
+            let _ = base.SetPageHeight(page_height_in);
         }
     }
 
@@ -229,6 +252,41 @@ fn silent_print(
     wait_with_pump_timeout(rx, PRINT_TIMEOUT)?
 }
 
+fn measure_content_height_px(webview: &ICoreWebView2) -> Result<f64> {
+    const JS: &str = r#"(function(){
+  var root = document.documentElement;
+  var body = document.body;
+  var extra = document.getElementById('pos-receipt-print');
+  var h = 0;
+  [root, body, extra].forEach(function (n) {
+    if (!n) return;
+    h = Math.max(h, n.scrollHeight || 0, n.offsetHeight || 0, n.clientHeight || 0);
+  });
+  return Math.ceil(h);
+})()"#;
+
+    let (tx, rx) = mpsc::channel();
+    let js = CoTaskMemPWSTR::from(JS);
+    unsafe {
+        webview.ExecuteScript(
+            *js.as_ref().as_pcwstr(),
+            &ExecuteScriptCompletedHandler::create(Box::new(move |error_code, result| {
+                error_code?;
+                let _ = tx.send(result);
+                Ok(())
+            })),
+        )?;
+    }
+    let json = wait_with_pump_timeout(rx, Duration::from_secs(10))?;
+    let trimmed = json.trim().trim_matches('"');
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+        bail!("content height script returned {json}");
+    }
+    trimmed
+        .parse::<f64>()
+        .with_context(|| format!("content height json {json}"))
+}
+
 unsafe fn create_hidden_window() -> Result<HWND> {
     let class_name = w!("FinvorooHtmlPrintEngine");
     let wc = WNDCLASSW {
@@ -247,7 +305,7 @@ unsafe fn create_hidden_window() -> Result<HWND> {
         -20000,
         -20000,
         400,
-        800,
+        8000,
         None,
         None,
         None,
