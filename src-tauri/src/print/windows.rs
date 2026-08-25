@@ -96,7 +96,9 @@ fn default_printer_name() -> Result<String> {
             return Ok(String::new());
         }
         let mut buf = vec![0u16; size as usize];
-        GetDefaultPrinterW(PWSTR(buf.as_mut_ptr()), &mut size).context("GetDefaultPrinterW")?;
+        if !GetDefaultPrinterW(PWSTR(buf.as_mut_ptr()), &mut size).as_bool() {
+            anyhow::bail!("GetDefaultPrinterW failed");
+        }
         Ok(String::from_utf16_lossy(&buf[..buf.len().saturating_sub(1)]).trim_end_matches('\0').to_string())
     }
 }
