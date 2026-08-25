@@ -17,10 +17,12 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Printing::{
     ClosePrinter, EndDocPrinter, EndPagePrinter, EnumPrintersW, GetDefaultPrinterW, OpenPrinterW,
     StartDocPrinterW, StartPagePrinter, WritePrinter, DOC_INFO_1W, PRINTER_ENUM_CONNECTIONS,
-    PRINTER_ENUM_LOCAL, PRINTER_INFO_2W,
+    PRINTER_ENUM_LOCAL, PRINTER_HANDLE, PRINTER_INFO_2W,
 };
 use windows::Win32::System::Threading::WaitForSingleObject;
-use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+use windows::Win32::UI::Shell::{
+    ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+};
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 use super::{
@@ -78,7 +80,11 @@ unsafe fn list_printers_inner() -> Result<Vec<PrinterInfo>> {
             continue;
         }
         let driver = pwstr_to_string(info.pDriverName);
-        let driver_opt = if driver.is_empty() { None } else { Some(driver) };
+        let driver_opt = if driver.is_empty() {
+            None
+        } else {
+            Some(driver)
+        };
         let printer_type = classify_printer(&name, driver_opt.as_deref());
         out.push(PrinterInfo {
             id: name.clone(),
@@ -94,7 +100,7 @@ unsafe fn list_printers_inner() -> Result<Vec<PrinterInfo>> {
 }
 
 fn pwstr_to_string(ptr: PWSTR) -> String {
-    if ptr.0.is_null() {
+    if ptr.is_null() {
         return String::new();
     }
     unsafe { ptr.to_string().unwrap_or_default() }
@@ -103,15 +109,19 @@ fn pwstr_to_string(ptr: PWSTR) -> String {
 fn default_printer_name() -> Result<String> {
     unsafe {
         let mut size: u32 = 0;
-        let _ = GetDefaultPrinterW(PWSTR(ptr::null_mut()), &mut size);
+        let _ = GetDefaultPrinterW(None, &mut size);
         if size == 0 {
             return Ok(String::new());
         }
         let mut buf = vec![0u16; size as usize];
-        if !GetDefaultPrinterW(PWSTR(buf.as_mut_ptr()), &mut size).as_bool() {
+        if !GetDefaultPrinterW(Some(PWSTR(buf.as_mut_ptr())), &mut size).as_bool() {
             anyhow::bail!("GetDefaultPrinterW failed");
         }
-        Ok(String::from_utf16_lossy(&buf[..buf.len().saturating_sub(1)]).trim_end_matches('\0').to_string())
+        Ok(
+            String::from_utf16_lossy(&buf[..buf.len().saturating_sub(1)])
+                .trim_end_matches('\0')
+                .to_string(),
+        )
     }
 }
 
@@ -124,11 +134,7 @@ pub fn print_job(req: &PrintRequest) -> Result<()> {
     }
     let kind = JobKind::parse(&req.job_type)?;
     if kind == JobKind::Html {
-        let paper_mm = req
-            .options
-            .as_ref()
-            .and_then(|o| o.paper_mm)
-            .unwrap_or(80);
+        let paper_mm = req.options.as_ref().and_then(|o| o.paper_mm).unwrap_or(80);
         if paper_mm != 58 && paper_mm != 80 {
             bail!("options.paper_mm must be 58 or 80");
         }
@@ -182,10 +188,9 @@ pub fn print_raw(printer: &str, payload: &[u8]) -> Result<()> {
 
 unsafe fn print_raw_inner(printer: &str, payload: &[u8]) -> Result<()> {
     let mut name = wide(printer);
-    let mut handle = HANDLE::default();
-    OpenPrinterW(PCWSTR(name.as_mut_ptr()), &mut handle, None).map_err(|_| {
-        anyhow::anyhow!("Printer \"{}\" is unavailable.", printer)
-    })?;
+    let mut handle = PRINTER_HANDLE::default();
+    OpenPrinterW(PCWSTR(name.as_mut_ptr()), &mut handle, None)
+        .map_err(|_| anyhow::anyhow!("Printer \"{}\" is unavailable.", printer))?;
 
     let result = (|| {
         let mut doc_name = wide("Finvoroo Print Agent");
@@ -280,9 +285,8 @@ unsafe fn print_pdf_via_shell_inner(printer: &str, path: &PathBuf) -> Result<()>
         hProcess: HANDLE::default(),
     };
 
-    ShellExecuteExW(&mut info).map_err(|_| {
-        anyhow::anyhow!("Printer \"{}\" is unavailable.", printer)
-    })?;
+    ShellExecuteExW(&mut info)
+        .map_err(|_| anyhow::anyhow!("Printer \"{}\" is unavailable.", printer))?;
     if info.hProcess.is_invalid() {
         return Ok(());
     }

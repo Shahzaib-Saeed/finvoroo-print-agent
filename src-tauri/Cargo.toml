@@ -37,7 +37,10 @@ tower = { version = "0.4", features = ["util"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
-windows = { version = "0.58", features = [
+# Must stay on 0.61: webview2-com 0.38 is generated against windows ^0.61.
+# Pairing it with windows 0.58 pulls two copies of windows_core / windows_strings
+# and every WebView2 call (HSTRING, PCWSTR, Interface::cast, Error) fails to type-check.
+windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
   "Win32_Graphics_Printing",

@@ -1,24 +1,28 @@
 //! Persistent WebView2 renderer for silent HTML thermal receipt printing.
+//!
+//! Uses only types from `webview2-com` 0.38 / `windows` 0.61 (they must be the same
+//! windows_core). Strings go through `CoTaskMemPWSTR` so we never mix HSTRING versions.
 
 #![cfg(windows)]
 
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use once_cell::sync::OnceCell;
 use webview2_com::{
-    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    NavigationCompletedEventHandler, PrintCompletedHandler, CoreWebView2EnvironmentOptions,
-    Microsoft::Web::WebView2::Win32::*,
+    CoTaskMemPWSTR, CreateCoreWebView2ControllerCompletedHandler,
+    CreateCoreWebView2EnvironmentCompletedHandler, Microsoft::Web::WebView2::Win32::*,
+    NavigationCompletedEventHandler, PrintCompletedHandler,
 };
-use windows::core::{Interface, PCWSTR, HSTRING};
-use windows::Win32::Foundation::{E_POINTER, E_UNEXPECTED, HWND, LPARAM, LRESULT, WPARAM};
+use windows::core::{w, Interface, BOOL};
+use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, RegisterClassW, ShowWindow, CS_HREDRAW, CS_VREDRAW,
-    SW_HIDE, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW, ShowWindow,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE, SW_HIDE, WINDOW_EX_STYLE, WNDCLASSW,
+    WS_OVERLAPPEDWINDOW,
 };
 
 struct HtmlPrintJob {
@@ -36,7 +40,6 @@ struct EngineHandles {
 
 static JOB_TX: OnceCell<mpsc::Sender<HtmlPrintJob>> = OnceCell::new();
 
-const ENGINE_CLASS: &str = "FinvorooHtmlPrintEngine";
 const NAV_TIMEOUT: Duration = Duration::from_secs(30);
 const PRINT_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -82,17 +85,16 @@ pub fn print_html(printer: &str, html: &str, paper_mm: u32) -> Result<()> {
 
 fn engine_thread_main(rx: mpsc::Receiver<HtmlPrintJob>) -> Result<()> {
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
     }
 
     let hwnd = unsafe { create_hidden_window()? };
     let handles = unsafe { create_webview(hwnd)? };
     unsafe {
         handles.controller.SetIsVisible(false)?;
-        ShowWindow(hwnd, SW_HIDE);
+        let _ = ShowWindow(hwnd, SW_HIDE);
     }
 
-    // Warm the renderer once so the first receipt is faster.
     if let Err(err) = warm_up(&handles.webview) {
         tracing::warn!("html print engine warm-up skipped: {err:#}");
     }
@@ -106,47 +108,40 @@ fn engine_thread_main(rx: mpsc::Receiver<HtmlPrintJob>) -> Result<()> {
 }
 
 fn warm_up(webview: &ICoreWebView2) -> Result<()> {
-    wait_navigation(webview, || unsafe {
-        webview
-            .NavigateToString(&HSTRING::from(
-                "<!DOCTYPE html><html><body></body></html>",
-            ))
-            .context("warm-up NavigateToString")
-    })
+    wait_navigation(webview, "<!DOCTYPE html><html><body></body></html>")
 }
 
-fn render_and_print(handles: &EngineHandles, printer: &str, html: &str, paper_mm: u32) -> Result<()> {
+fn render_and_print(
+    handles: &EngineHandles,
+    printer: &str,
+    html: &str,
+    paper_mm: u32,
+) -> Result<()> {
     if html.is_empty() {
         return Ok(());
     }
 
-    wait_navigation(&handles.webview, || unsafe {
-        handles
-            .webview
-            .NavigateToString(&HSTRING::from(html))
-            .context("NavigateToString")
-    })?;
-
-    // Allow layout/paint to settle before silent print.
+    wait_navigation(&handles.webview, html)?;
     thread::sleep(Duration::from_millis(80));
-
     silent_print(&handles.env, &handles.webview, printer, paper_mm)
 }
 
-fn wait_navigation<F>(webview: &ICoreWebView2, navigate: F) -> Result<()>
-where
-    F: FnOnce() -> Result<()>,
-{
+fn navigate_to_html(webview: &ICoreWebView2, html: &str) -> Result<()> {
+    let html = CoTaskMemPWSTR::from(html);
+    unsafe { webview.NavigateToString(*html.as_ref().as_pcwstr()) }.context("NavigateToString")
+}
+
+fn wait_navigation(webview: &ICoreWebView2, html: &str) -> Result<()> {
     let (tx, rx) = mpsc::channel();
-    let mut token = EventRegistrationToken::default();
+    let mut token = 0i64;
     unsafe {
         webview.add_NavigationCompleted(
             &NavigationCompletedEventHandler::create(Box::new(move |_, args| {
-                let result = (|| {
+                let result = (|| -> Result<()> {
                     let args = args.ok_or_else(|| windows::core::Error::from(E_POINTER))?;
-                    let mut success = false;
+                    let mut success = BOOL::default();
                     args.IsSuccess(&mut success)?;
-                    if !success {
+                    if !success.as_bool() {
                         bail!("html navigation failed");
                     }
                     Ok(())
@@ -158,15 +153,21 @@ where
         )?;
     }
 
-    navigate()?;
-
-    match rx.recv_timeout(NAV_TIMEOUT) {
-        Ok(result) => result,
-        Err(mpsc::RecvTimeoutError::Timeout) => bail!("html navigation timed out"),
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            bail!("html navigation handler disconnected")
-        }
+    let nav_result = navigate_to_html(webview, html);
+    if let Err(err) = nav_result {
+        let _ = unsafe { webview.remove_NavigationCompleted(token) };
+        return Err(err);
     }
+
+    let result = match wait_with_pump_timeout(rx, NAV_TIMEOUT) {
+        Ok(result) => result,
+        Err(err) => {
+            let _ = unsafe { webview.remove_NavigationCompleted(token) };
+            return Err(err);
+        }
+    };
+    let _ = unsafe { webview.remove_NavigationCompleted(token) };
+    result
 }
 
 fn silent_print(
@@ -175,13 +176,13 @@ fn silent_print(
     printer: &str,
     paper_mm: u32,
 ) -> Result<()> {
-    let webview16: ICoreWebView2_16 = webview
-        .cast()
-        .context("WebView2 Print API (ICoreWebView2_16) is unavailable — update WebView2 Runtime")?;
+    let webview16: ICoreWebView2_16 = webview.cast().context(
+        "WebView2 Print API (ICoreWebView2_16) is unavailable — update WebView2 Runtime",
+    )?;
 
-    let env6: ICoreWebView2Environment6 = env
-        .cast()
-        .context("WebView2 Print API (ICoreWebView2Environment6) is unavailable — update WebView2 Runtime")?;
+    let env6: ICoreWebView2Environment6 = env.cast().context(
+        "WebView2 Print API (ICoreWebView2Environment6) is unavailable — update WebView2 Runtime",
+    )?;
 
     let settings = unsafe { env6.CreatePrintSettings()? };
     let settings2: ICoreWebView2PrintSettings2 = settings
@@ -189,15 +190,18 @@ fn silent_print(
         .context("WebView2 printer settings (ICoreWebView2PrintSettings2) are unavailable")?;
 
     unsafe {
-        settings2.SetPrinterName(&HSTRING::from(printer))?;
+        let printer_name = CoTaskMemPWSTR::from(printer);
+        settings2.SetPrinterName(*printer_name.as_ref().as_pcwstr())?;
         if let Ok(base) = settings.cast::<ICoreWebView2PrintSettings>() {
-            base.SetShouldPrintBackground(true)?;
-            base.SetShouldPrintHeaderAndFooter(false)?;
+            let _ = base.SetShouldPrintBackgrounds(true);
+            let _ = base.SetShouldPrintHeaderAndFooter(false);
             let margin_in = if paper_mm <= 58 { 0.08 } else { 0.12 };
             let _ = base.SetMarginTop(margin_in);
             let _ = base.SetMarginBottom(margin_in);
             let _ = base.SetMarginLeft(margin_in);
             let _ = base.SetMarginRight(margin_in);
+            let width_in = (paper_mm as f64) / 25.4;
+            let _ = base.SetPageWidth(width_in);
         }
     }
 
@@ -206,7 +210,7 @@ fn silent_print(
         webview16.Print(
             &settings,
             &PrintCompletedHandler::create(Box::new(move |error_code, status| {
-                let result = (|| {
+                let result = (|| -> Result<()> {
                     error_code?;
                     match status {
                         COREWEBVIEW2_PRINT_STATUS_SUCCEEDED => Ok(()),
@@ -222,18 +226,14 @@ fn silent_print(
         )?;
     }
 
-    match rx.recv_timeout(PRINT_TIMEOUT) {
-        Ok(result) => result,
-        Err(mpsc::RecvTimeoutError::Timeout) => bail!("html print timed out"),
-        Err(mpsc::RecvTimeoutError::Disconnected) => bail!("html print handler disconnected"),
-    }
+    wait_with_pump_timeout(rx, PRINT_TIMEOUT)?
 }
 
 unsafe fn create_hidden_window() -> Result<HWND> {
-    let class_name = wide(ENGINE_CLASS);
+    let class_name = w!("FinvorooHtmlPrintEngine");
     let wc = WNDCLASSW {
         lpfnWndProc: Some(wnd_proc),
-        lpszClassName: PCWSTR(class_name.as_ptr()),
+        lpszClassName: class_name,
         style: CS_HREDRAW | CS_VREDRAW,
         ..Default::default()
     };
@@ -241,9 +241,9 @@ unsafe fn create_hidden_window() -> Result<HWND> {
 
     let hwnd = CreateWindowExW(
         WINDOW_EX_STYLE::default(),
-        PCWSTR(class_name.as_ptr()),
-        PCWSTR(wide("Finvoroo HTML Print").as_ptr()),
-        WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0),
+        class_name,
+        w!("Finvoroo HTML Print"),
+        WS_OVERLAPPEDWINDOW,
         -20000,
         -20000,
         400,
@@ -258,46 +258,76 @@ unsafe fn create_hidden_window() -> Result<HWND> {
 
 unsafe fn create_webview(hwnd: HWND) -> Result<EngineHandles> {
     let (env_tx, env_rx) = mpsc::channel();
-    let options = CoreWebView2EnvironmentOptions::default();
-    CreateCoreWebView2EnvironmentWithOptions(
-        PCWSTR::null(),
-        &HSTRING::from(""),
-        &ICoreWebView2EnvironmentOptions::from(options),
-        &CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
-            move |error_code, environment| {
-                let result = (|| {
-                    error_code?;
-                    environment.ok_or_else(|| windows::core::Error::from(E_POINTER))
-                })();
-                env_tx
-                    .send(result)
-                    .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
-            },
-        )),
-    )?;
-    let env = webview2_com::wait_with_pump(env_rx).context("CreateCoreWebView2Environment")?;
+    CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
+        Box::new(|handler| unsafe {
+            CreateCoreWebView2Environment(&handler).map_err(webview2_com::Error::WindowsError)
+        }),
+        Box::new(move |error_code, environment| {
+            error_code?;
+            env_tx
+                .send(environment.ok_or_else(|| windows::core::Error::from(E_POINTER)))
+                .expect("html print env channel");
+            Ok(())
+        }),
+    )
+    .map_err(|e| anyhow::anyhow!("CreateCoreWebView2Environment: {e:?}"))?;
+    let env = env_rx
+        .recv()
+        .context("CreateCoreWebView2Environment channel closed")??;
 
+    let env_for_controller = env.clone();
     let (ctrl_tx, ctrl_rx) = mpsc::channel();
-    let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
-        move |error_code, controller| {
-            let result = (|| {
-                error_code?;
-                controller.ok_or_else(|| windows::core::Error::from(E_POINTER))
-            })();
+    CreateCoreWebView2ControllerCompletedHandler::wait_for_async_operation(
+        Box::new(move |handler| unsafe {
+            env_for_controller
+                .CreateCoreWebView2Controller(hwnd, &handler)
+                .map_err(webview2_com::Error::WindowsError)
+        }),
+        Box::new(move |error_code, controller| {
+            error_code?;
             ctrl_tx
-                .send(result)
-                .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
-        },
-    ));
-    env.CreateCoreWebView2Controller(hwnd, &handler)?;
-    let controller = webview2_com::wait_with_pump(ctrl_rx).context("CreateCoreWebView2Controller")?;
-    let webview = unsafe { controller.CoreWebView2()? };
+                .send(controller.ok_or_else(|| windows::core::Error::from(E_POINTER)))
+                .expect("html print controller channel");
+            Ok(())
+        }),
+    )
+    .map_err(|e| anyhow::anyhow!("CreateCoreWebView2Controller: {e:?}"))?;
+    let controller = ctrl_rx
+        .recv()
+        .context("CreateCoreWebView2Controller channel closed")??;
+    let webview = controller.CoreWebView2()?;
 
     Ok(EngineHandles {
         env,
         controller,
         webview,
     })
+}
+
+/// Pump this thread's Win32 message loop until `rx` receives or `timeout` elapses.
+/// WebView2 completions are posted as window messages; a blocking `recv` would deadlock.
+fn wait_with_pump_timeout<T>(rx: mpsc::Receiver<T>, timeout: Duration) -> Result<T> {
+    let deadline = Instant::now() + timeout;
+    let mut msg = MSG::default();
+    loop {
+        if let Ok(value) = rx.try_recv() {
+            return Ok(value);
+        }
+        if Instant::now() >= deadline {
+            bail!("html print operation timed out");
+        }
+
+        unsafe {
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+                if let Ok(value) = rx.try_recv() {
+                    return Ok(value);
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -307,8 +337,4 @@ unsafe extern "system" fn wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     DefWindowProcW(hwnd, msg, wparam, lparam)
-}
-
-fn wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
