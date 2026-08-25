@@ -1,0 +1,110 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f7fb;
+  --card: #ffffff;
+  --ink: #0f2744;
+  --muted: #5b6b7c;
+  --line: #d7e0ea;
+  --sky: #0284c7;
+  --sky-ink: #ffffff;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+.shell {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 24px 20px 32px;
+}
+header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 18px;
+}
+.mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #0f2744;
+  color: white;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+}
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 14px; margin: 0 0 8px; }
+.muted { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 4px 0 0; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  padding: 6px 0;
+}
+.row span { color: var(--muted); }
+.token-box {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+}
+code {
+  flex: 1;
+  font-size: 11px;
+  word-break: break-all;
+}
+.field { display: grid; gap: 6px; font-size: 12px; }
+select, button {
+  font: inherit;
+}
+select {
+  width: 100%;
+  height: 38px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  padding: 0 10px;
+  background: white;
+}
+.actions { display: flex; gap: 8px; margin-top: 12px; }
+button {
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: white;
+  cursor: pointer;
+  padding: 0 12px;
+}
+button.primary {
+  background: var(--sky);
+  color: var(--sky-ink);
+  border-color: var(--sky);
+}
+button.ghost { margin-top: 4px; }
+button:disabled { opacity: 0.55; cursor: default; }
+.pin-box {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 12px 0;
+}
+#pair-code {
+  font-size: 32px;
+  letter-spacing: 0.18em;
+  font-variant-numeric: tabular-nums;
+}

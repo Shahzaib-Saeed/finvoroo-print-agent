@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Finvoroo Print Agent</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div class="mark">F</div>
+        <div>
+          <h1>Finvoroo Print Agent</h1>
+          <p class="muted">Silent local printing for Finvoroo ERP</p>
+        </div>
+      </header>
+
+      <section class="card">
+        <div class="row">
+          <span>Status</span>
+          <strong id="status-label">Starting…</strong>
+        </div>
+        <div class="row">
+          <span>Version</span>
+          <strong id="version">—</strong>
+        </div>
+        <div class="row">
+          <span>API</span>
+          <strong id="api">127.0.0.1:17392</strong>
+        </div>
+        <div class="row">
+          <span>Platform</span>
+          <strong id="platform">—</strong>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Pair with Finvoroo</h2>
+        <p class="muted">
+          In Finvoroo click Pair, then enter this 6-digit code. It expires in 60 seconds and is never sent over the network until you submit it from Finvoroo.
+        </p>
+        <div class="pin-box">
+          <strong id="pair-code">------</strong>
+          <span class="muted" id="pair-ttl"></span>
+        </div>
+        <button type="button" class="primary" id="issue-pin">Show pairing code</button>
+      </section>
+
+      <section class="card">
+        <h2>Installation token</h2>
+        <p class="muted">
+          Advanced: paste this token only if pairing is unavailable. It never leaves this computer.
+        </p>
+        <div class="token-box">
+          <code id="token">loading…</code>
+          <button type="button" id="copy-token">Copy</button>
+        </div>
+        <button type="button" class="ghost" id="regen-token">Regenerate token</button>
+      </section>
+
+      <section class="card">
+        <h2>Printers</h2>
+        <label class="field">
+          <span>Default printer</span>
+          <select id="printers">
+            <option value="">Loading…</option>
+          </select>
+        </label>
+        <div class="actions">
+          <button type="button" id="refresh">Refresh printers</button>
+          <button type="button" class="primary" id="test-print">Test print</button>
+        </div>
+        <p class="muted" id="message"></p>
+      </section>
+    </main>
+    <script src="main.js"></script>
+  </body>
+</html>

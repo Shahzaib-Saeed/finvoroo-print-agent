@@ -1,0 +1,6 @@
+node_modules/
+src-tauri/target/
+.DS_Store
+# Built installer (FinvorooPrintAgent-Setup.exe) — produce with npm run build on Windows
+dist/
+*.log
