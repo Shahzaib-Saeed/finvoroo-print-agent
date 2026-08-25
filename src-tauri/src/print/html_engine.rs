@@ -5,6 +5,7 @@
 
 #![cfg(windows)]
 
+use std::ffi::c_void;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,27 +13,42 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use once_cell::sync::OnceCell;
 use webview2_com::{
-    CoTaskMemPWSTR, CreateCoreWebView2ControllerCompletedHandler,
+    CapturePreviewCompletedHandler, CoTaskMemPWSTR, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, ExecuteScriptCompletedHandler,
     Microsoft::Web::WebView2::Win32::*, NavigationCompletedEventHandler, PrintCompletedHandler,
 };
 use windows::core::{w, Interface, BOOL};
-use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW, ShowWindow,
-    TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE, SW_HIDE, WINDOW_EX_STYLE, WNDCLASSW,
-    WS_OVERLAPPEDWINDOW,
+use windows::Win32::Foundation::{E_POINTER, HGLOBAL, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal;
+use windows::Win32::System::Com::{
+    CoInitializeEx, IStream, COINIT_APARTMENTTHREADED, STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET,
 };
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW, SetWindowPos,
+    ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE, SWP_NOACTIVATE,
+    SWP_NOZORDER, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+};
+
+use crate::print::escpos_raster::{self, MonoBitmap};
+
+/// What the engine thread managed to do with a receipt.
+pub enum HtmlOutcome {
+    /// ESC/POS bit image, ready for the spooler's RAW channel. Includes the cut.
+    Raster(Vec<u8>),
+    /// Rasterising was not possible, so the WebView2 print API and the printer
+    /// driver were used instead. The caller still owes the printer a cut.
+    Printed,
+}
 
 struct HtmlPrintJob {
     printer: String,
     html: String,
     paper_mm: u32,
-    reply: mpsc::Sender<Result<()>>,
+    reply: mpsc::Sender<Result<HtmlOutcome>>,
 }
 
 struct EngineHandles {
+    hwnd: HWND,
     env: ICoreWebView2Environment,
     controller: ICoreWebView2Controller,
     webview: ICoreWebView2,
@@ -42,6 +58,12 @@ static JOB_TX: OnceCell<mpsc::Sender<HtmlPrintJob>> = OnceCell::new();
 
 const NAV_TIMEOUT: Duration = Duration::from_secs(30);
 const PRINT_TIMEOUT: Duration = Duration::from_secs(60);
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The render window lives off every monitor so nothing flashes on the till.
+const OFFSCREEN_ORIGIN: i32 = -30_000;
+/// Blank paper left after the last dot, so the cut does not clip a descender.
+const TRAILING_DOT_ROWS: u32 = 24;
 
 pub fn init() -> Result<()> {
     if JOB_TX.get().is_some() {
@@ -65,7 +87,7 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
-pub fn print_html(printer: &str, html: &str, paper_mm: u32) -> Result<()> {
+pub fn print_html(printer: &str, html: &str, paper_mm: u32) -> Result<HtmlOutcome> {
     let tx = JOB_TX
         .get()
         .ok_or_else(|| anyhow::anyhow!("html print engine is not initialized"))?;
@@ -95,11 +117,13 @@ fn engine_thread_main(rx: mpsc::Receiver<HtmlPrintJob>) -> Result<()> {
         handles.controller.SetBounds(RECT {
             left: 0,
             top: 0,
-            right: 400,
+            right: 600,
             bottom: 8000,
         })?;
-        handles.controller.SetIsVisible(false)?;
-        let _ = ShowWindow(hwnd, SW_HIDE);
+        // CapturePreview only returns pixels for a webview that is actually
+        // compositing, so the window stays shown — parked off-screen.
+        handles.controller.SetIsVisible(true)?;
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     }
 
     if let Err(err) = warm_up(&handles.webview) {
@@ -123,14 +147,161 @@ fn render_and_print(
     printer: &str,
     html: &str,
     paper_mm: u32,
-) -> Result<()> {
+) -> Result<HtmlOutcome> {
     if html.is_empty() {
-        return Ok(());
+        return Ok(HtmlOutcome::Printed);
     }
 
     wait_navigation(&handles.webview, html)?;
     wait_for_layout(&handles.webview);
-    silent_print(&handles.env, &handles.webview, printer, paper_mm)
+
+    match render_raster(handles, paper_mm) {
+        Ok(payload) => return Ok(HtmlOutcome::Raster(payload)),
+        Err(err) => tracing::warn!(
+            "receipt raster failed, falling back to driver print: {err:#}"
+        ),
+    }
+
+    silent_print(&handles.env, &handles.webview, printer, paper_mm)?;
+    Ok(HtmlOutcome::Printed)
+}
+
+/// Render the receipt at the printer's dot pitch and turn it into an ESC/POS bit
+/// image. This is the path that avoids driver page sizes entirely.
+fn render_raster(handles: &EngineHandles, paper_mm: u32) -> Result<Vec<u8>> {
+    let (layout_mm, width_dots) = escpos_raster::paper_geometry(paper_mm);
+    let scale = escpos_raster::rasterization_scale(layout_mm, width_dots);
+
+    let controller3: ICoreWebView2Controller3 = handles
+        .controller
+        .cast()
+        .context("ICoreWebView2Controller3 is unavailable — update WebView2 Runtime")?;
+    unsafe {
+        // Raw pixels plus a fixed rasterization scale means the till's display DPI
+        // cannot change how many dots wide the receipt comes out.
+        controller3.SetShouldDetectMonitorScaleChanges(false)?;
+        controller3.SetBoundsMode(COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS)?;
+        controller3.SetRasterizationScale(scale)?;
+    }
+
+    let height_css = measure_content_height_px(&handles.webview, layout_mm)?;
+    if height_css < 40.0 {
+        bail!("measured receipt height {height_css}px is implausible");
+    }
+    // A few slack pixels keep a rounded-down last line inside the capture. The
+    // extra white is trimmed off again before the cut.
+    let height_dots = (((height_css + 4.0) * scale).ceil() as u32)
+        .min(escpos_raster::MAX_RASTER_ROWS);
+
+    unsafe { resize_surface(handles, width_dots, height_dots)? };
+    tracing::info!(
+        paper_mm,
+        layout_mm,
+        width_dots,
+        height_css,
+        height_dots,
+        "rasterising receipt"
+    );
+
+    let png = capture_png(&handles.webview)?;
+    let bitmap = decode_png_to_mono(&png, width_dots)?;
+    if bitmap.is_blank() {
+        bail!("captured receipt is blank");
+    }
+
+    let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, TRAILING_DOT_ROWS);
+    Ok(escpos_raster::escpos_payload(&bitmap))
+}
+
+unsafe fn resize_surface(handles: &EngineHandles, width: u32, height: u32) -> Result<()> {
+    // The webview cannot composite more than its host window, so grow both.
+    SetWindowPos(
+        handles.hwnd,
+        None,
+        OFFSCREEN_ORIGIN,
+        OFFSCREEN_ORIGIN,
+        width as i32,
+        height as i32,
+        SWP_NOACTIVATE | SWP_NOZORDER,
+    )
+    .context("SetWindowPos for capture surface")?;
+    handles
+        .controller
+        .SetBounds(RECT {
+            left: 0,
+            top: 0,
+            right: width as i32,
+            bottom: height as i32,
+        })
+        .context("SetBounds for capture surface")?;
+    handles.controller.SetIsVisible(true)?;
+    pump_for(Duration::from_millis(160));
+    Ok(())
+}
+
+fn capture_png(webview: &ICoreWebView2) -> Result<Vec<u8>> {
+    let stream = unsafe { CreateStreamOnHGlobal(HGLOBAL(std::ptr::null_mut()), true) }
+        .context("CreateStreamOnHGlobal for receipt capture")?;
+
+    let (tx, rx) = mpsc::channel();
+    unsafe {
+        webview.CapturePreview(
+            COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+            &stream,
+            &CapturePreviewCompletedHandler::create(Box::new(move |error_code| {
+                let result = (|| -> Result<()> {
+                    error_code?;
+                    Ok(())
+                })();
+                let _ = tx.send(result);
+                Ok(())
+            })),
+        )?;
+    }
+    wait_with_pump_timeout(rx, CAPTURE_TIMEOUT)??;
+
+    read_stream(&stream)
+}
+
+fn read_stream(stream: &IStream) -> Result<Vec<u8>> {
+    let mut stat = STATSTG::default();
+    unsafe { stream.Stat(&mut stat, STATFLAG_NONAME) }.context("Stat on capture stream")?;
+    let len = stat.cbSize as usize;
+    if len == 0 {
+        bail!("receipt capture stream is empty");
+    }
+
+    unsafe { stream.Seek(0, STREAM_SEEK_SET, None) }.context("Seek on capture stream")?;
+    let mut buf = vec![0u8; len];
+    let mut read: u32 = 0;
+    unsafe {
+        stream
+            .Read(buf.as_mut_ptr() as *mut c_void, len as u32, Some(&mut read))
+            .ok()
+            .context("Read on capture stream")?;
+    }
+    buf.truncate(read as usize);
+    if buf.is_empty() {
+        bail!("receipt capture returned no bytes");
+    }
+    Ok(buf)
+}
+
+fn decode_png_to_mono(png: &[u8], width_dots: u32) -> Result<MonoBitmap> {
+    let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .context("decode receipt capture png")?
+        .into_luma8();
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        bail!("receipt capture is {width}x{height}");
+    }
+    Ok(escpos_raster::pack_luma(
+        width,
+        height,
+        image.as_raw(),
+        width_dots,
+        escpos_raster::BLACK_THRESHOLD,
+    ))
 }
 
 fn navigate_to_html(webview: &ICoreWebView2, html: &str) -> Result<()> {
@@ -200,7 +371,8 @@ fn silent_print(
     // Chrome uses `@page { size: 80mm auto }`. WebView2 treats `auto` as ~0 and
     // then shrink-to-fits the receipt (looks like 0.001 font on 80mm). A 1" floor
     // does the same. Measure the real receipt; if that fails, use a tall roll.
-    let content_px = measure_content_height_px(webview).unwrap_or(0.0);
+    let (layout_mm, _) = escpos_raster::paper_geometry(paper_mm);
+    let content_px = measure_content_height_px(webview, layout_mm).unwrap_or(0.0);
     let content_px = if content_px < 80.0 {
         tracing::warn!(
             "html print height {content_px}px is implausible; using 22in roll fallback"
@@ -312,36 +484,55 @@ fn inject_page_size(webview: &ICoreWebView2, paper_mm: u32, height_mm: f64) -> R
     Ok(())
 }
 
-fn measure_content_height_px(webview: &ICoreWebView2) -> Result<f64> {
-    const JS: &str = r#"(function(){
-  var mm = (document.documentElement.className || '').indexOf('print-thermal-receipt-58') >= 0 ? 58 : 80;
+/// Force the receipt to lay out at the printable width and report how tall it is
+/// in CSS pixels. `layout_mm` is the paper's printable width, not the roll width.
+fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<f64> {
+    let js = format!(
+        r#"(function(){{
+  var mm = {layout_mm};
   var root = document.getElementById('pos-receipt-print') || document.body;
-  var targets = [root, document.body, document.querySelector('.thermal-receipt-body')];
-  for (var t = 0; t < targets.length; t++) {
+  var targets = [document.documentElement, document.body, root,
+    document.querySelector('.thermal-print-source'),
+    document.querySelector('.thermal-receipt-stage'),
+    document.querySelector('.thermal-receipt-sheet'),
+    document.querySelector('.thermal-receipt-body')];
+  for (var t = 0; t < targets.length; t++) {{
     var el = targets[t];
     if (!el || !el.style) continue;
     el.style.setProperty('position','static','important');
     el.style.setProperty('left','auto','important');
     el.style.setProperty('top','auto','important');
+    el.style.setProperty('margin','0','important');
     el.style.setProperty('transform','none','important');
     el.style.setProperty('visibility','visible','important');
     el.style.setProperty('display','block','important');
     el.style.setProperty('width', mm + 'mm','important');
     el.style.setProperty('max-width', mm + 'mm','important');
     el.style.setProperty('overflow','visible','important');
-  }
+    el.style.setProperty('background','#fff','important');
+  }}
+  // A scrollbar would narrow the layout and shift the capture, so suppress it.
+  var noBars = document.getElementById('finvoroo-no-scrollbars');
+  if (!noBars) {{
+    noBars = document.createElement('style');
+    noBars.id = 'finvoroo-no-scrollbars';
+    noBars.textContent = 'html, body {{ overflow: hidden !important; }}'
+      + '::-webkit-scrollbar {{ display: none !important; width: 0 !important; }}';
+    document.head.appendChild(noBars);
+  }}
   void document.body.offsetHeight;
   var origin = root.getBoundingClientRect();
   var h = Math.max(root.scrollHeight || 0, root.offsetHeight || 0, origin.height || 0);
   var list = root.querySelectorAll('*');
-  for (var i = 0; i < list.length; i++) {
+  for (var i = 0; i < list.length; i++) {{
     var r = list[i].getBoundingClientRect();
     h = Math.max(h, r.bottom - origin.top, list[i].scrollHeight || 0, list[i].offsetHeight || 0);
-  }
+  }}
   return Math.ceil(h);
-})()"#;
+}})()"#
+    );
 
-    let json = execute_script(webview, JS)?;
+    let json = execute_script(webview, &js)?;
     let trimmed = json.trim().trim_matches('"');
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
         bail!("content height script returned {json}");
@@ -391,14 +582,16 @@ unsafe fn create_hidden_window() -> Result<HWND> {
     };
     RegisterClassW(&wc);
 
+    // Tool window, never activated, parked off every monitor: the cashier never
+    // sees it, but it still composites so CapturePreview returns real pixels.
     let hwnd = CreateWindowExW(
-        WINDOW_EX_STYLE::default(),
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         class_name,
         w!("Finvoroo HTML Print"),
-        WS_OVERLAPPEDWINDOW,
-        -20000,
-        -20000,
-        400,
+        WS_POPUP,
+        OFFSCREEN_ORIGIN,
+        OFFSCREEN_ORIGIN,
+        600,
         8000,
         None,
         None,
@@ -450,6 +643,7 @@ unsafe fn create_webview(hwnd: HWND) -> Result<EngineHandles> {
     let webview = controller.CoreWebView2()?;
 
     Ok(EngineHandles {
+        hwnd,
         env,
         controller,
         webview,

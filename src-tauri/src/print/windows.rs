@@ -141,9 +141,17 @@ pub fn print_job(req: &PrintRequest) -> Result<()> {
         if paper_mm != 58 && paper_mm != 80 {
             bail!("options.paper_mm must be 58 or 80");
         }
-        html_engine::print_html(&req.printer_id, &req.data, paper_mm)?;
-        if let Err(err) = print_raw(&req.printer_id, ESCPOS_FEED_AND_CUT) {
-            tracing::warn!("thermal cut after HTML print failed: {err:#}");
+        match html_engine::print_html(&req.printer_id, &req.data, paper_mm)? {
+            // Dots straight to the head: the driver never sees a page, so it cannot
+            // scale the receipt down or split the last row onto another page.
+            html_engine::HtmlOutcome::Raster(payload) => {
+                print_raw(&req.printer_id, &payload)?;
+            }
+            html_engine::HtmlOutcome::Printed => {
+                if let Err(err) = print_raw(&req.printer_id, ESCPOS_FEED_AND_CUT) {
+                    tracing::warn!("thermal cut after HTML print failed: {err:#}");
+                }
+            }
         }
         if req
             .options

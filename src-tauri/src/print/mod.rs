@@ -1,3 +1,5 @@
+pub mod escpos_raster;
+
 #[cfg(windows)]
 #[path = "windows.rs"]
 mod backend;
