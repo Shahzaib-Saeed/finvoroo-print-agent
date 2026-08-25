@@ -3,6 +3,8 @@
 
 #![cfg(windows)]
 
+mod html_engine;
+
 use std::ffi::c_void;
 use std::fs;
 use std::path::PathBuf;
@@ -22,9 +24,19 @@ use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_N
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 use super::{
-    build_test_pdf, classify_printer, decode_payload, zebra_test_zpl, JobKind, PrintRequest,
-    PrinterInfo,
+    build_test_pdf, classify_printer, decode_payload, thermal_test_escpos, zebra_test_zpl, JobKind,
+    PrintRequest, PrinterInfo,
 };
+
+const ESCPOS_OPEN_DRAWER: &[u8] = &[0x1b, 0x70, 0x00, 0x19, 0xfa];
+
+pub fn init_html_engine() -> Result<()> {
+    html_engine::init()
+}
+
+fn open_cash_drawer(printer: &str) -> Result<()> {
+    print_raw(printer, ESCPOS_OPEN_DRAWER)
+}
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -111,10 +123,32 @@ pub fn print_job(req: &PrintRequest) -> Result<()> {
         bail!("print data is empty");
     }
     let kind = JobKind::parse(&req.job_type)?;
+    if kind == JobKind::Html {
+        let paper_mm = req
+            .options
+            .as_ref()
+            .and_then(|o| o.paper_mm)
+            .unwrap_or(80);
+        if paper_mm != 58 && paper_mm != 80 {
+            bail!("options.paper_mm must be 58 or 80");
+        }
+        html_engine::print_html(&req.printer_id, &req.data, paper_mm)?;
+        if req
+            .options
+            .as_ref()
+            .and_then(|o| o.open_drawer)
+            .unwrap_or(false)
+        {
+            open_cash_drawer(&req.printer_id)?;
+        }
+        return Ok(());
+    }
+
     let bytes = decode_payload(&req.data, req.encoding.as_deref(), kind)?;
     match kind {
         JobKind::Zpl | JobKind::Raw | JobKind::EscPos => print_raw(&req.printer_id, &bytes),
         JobKind::Pdf => print_pdf(&req.printer_id, &bytes),
+        JobKind::Html => unreachable!(),
     }
 }
 
@@ -132,6 +166,9 @@ pub fn test_print(printer_id: &str) -> Result<()> {
 
     if kind == "zebra" {
         return print_raw(id, zebra_test_zpl().as_bytes());
+    }
+    if kind == "thermal" {
+        return print_raw(id, thermal_test_escpos());
     }
     print_pdf(id, &build_test_pdf())
 }
@@ -167,18 +204,31 @@ unsafe fn print_raw_inner(printer: &str, payload: &[u8]) -> Result<()> {
             bail!("StartPagePrinter failed");
         }
 
-        let mut written: u32 = 0;
-        let ok = WritePrinter(
-            handle,
-            payload.as_ptr() as *const c_void,
-            payload.len() as u32,
-            &mut written,
-        );
+        let mut written_total: u32 = 0;
+        let mut offset = 0;
+        while offset < payload.len() {
+            let end = (offset + 4096).min(payload.len());
+            let chunk = &payload[offset..end];
+            let mut written: u32 = 0;
+            let ok = WritePrinter(
+                handle,
+                chunk.as_ptr() as *const c_void,
+                chunk.len() as u32,
+                &mut written,
+            );
+            if !ok.as_bool() || written == 0 {
+                let _ = EndPagePrinter(handle);
+                let _ = EndDocPrinter(handle);
+                bail!(
+                    "WritePrinter failed (wrote {written_total} of {} bytes)",
+                    payload.len()
+                );
+            }
+            written_total += written;
+            offset += written as usize;
+        }
         let _ = EndPagePrinter(handle);
         let _ = EndDocPrinter(handle);
-        if !ok.as_bool() || written == 0 {
-            bail!("WritePrinter failed (wrote {written} of {} bytes)", payload.len());
-        }
         Ok(())
     })();
 

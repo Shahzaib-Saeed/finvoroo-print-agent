@@ -167,6 +167,11 @@ pub fn run() {
             };
             app.manage(state.clone());
 
+            #[cfg(windows)]
+            if let Err(err) = print::init_html_engine() {
+                tracing::error!("html print engine failed to start: {err:#}");
+            }
+
             match app.handle().autolaunch().enable() {
                 Ok(()) => tracing::info!("autostart enabled"),
                 Err(err) => tracing::warn!("autostart could not be enabled: {err}"),

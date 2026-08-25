@@ -1089,9 +1089,11 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
+ "crossbeam-channel",
  "getrandom 0.2.17",
  "hex",
  "http",
+ "once_cell",
  "serde",
  "serde_json",
  "tauri",
@@ -1103,6 +1105,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "webview2-com",
  "windows 0.58.0",
 ]
 

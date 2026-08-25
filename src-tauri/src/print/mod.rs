@@ -6,9 +6,17 @@ mod backend;
 #[path = "stub.rs"]
 mod backend;
 
-pub use backend::{list_printers, print_job, test_print};
+pub use backend::{init_html_engine, list_printers, print_job, test_print};
 
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PrintOptions {
+    #[serde(default)]
+    pub paper_mm: Option<u32>,
+    #[serde(default)]
+    pub open_drawer: Option<bool>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PrinterInfo {
@@ -31,6 +39,8 @@ pub struct PrintRequest {
     pub data: String,
     #[serde(default)]
     pub encoding: Option<String>,
+    #[serde(default)]
+    pub options: Option<PrintOptions>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +49,7 @@ pub enum JobKind {
     Zpl,
     Raw,
     EscPos,
+    Html,
 }
 
 impl JobKind {
@@ -48,7 +59,10 @@ impl JobKind {
             "zpl" => Ok(Self::Zpl),
             "raw" => Ok(Self::Raw),
             "escpos" | "esc/pos" | "esc-pos" => Ok(Self::EscPos),
-            other => anyhow::bail!("unsupported print type '{other}' (use pdf, zpl, escpos, or raw)"),
+            "html" => Ok(Self::Html),
+            other => anyhow::bail!(
+                "unsupported print type '{other}' (use pdf, html, zpl, escpos, or raw)"
+            ),
         }
     }
 
@@ -97,6 +111,15 @@ pub fn classify_printer(name: &str, driver: Option<&str>) -> String {
         || hay.contains("thermal")
         || hay.contains("receipt")
         || hay.contains("pos-")
+        || hay.contains("pos 80")
+        || hay.contains("pos80")
+        || hay.contains("pos 58")
+        || hay.contains("pos58")
+        || hay.contains("bixolon")
+        || hay.contains("bc-95")
+        || hay.contains("bc95")
+        || hay.contains("xprinter")
+        || hay.contains("citizen")
     {
         return "thermal".into();
     }
@@ -105,6 +128,11 @@ pub fn classify_printer(name: &str, driver: Option<&str>) -> String {
 
 pub fn zebra_test_zpl() -> &'static str {
     "^XA\r\n^MMT\r\n^PW812\r\n^LL400\r\n^FO40,40^A0N,48,48^FDFinvoroo Print Agent^FS\r\n^FO40,110^A0N,28,28^FDSilent test print^FS\r\n^FO40,160^A0N,24,24^FDZebra / ZPL path OK^FS\r\n^XZ\r\n"
+}
+
+/// ESC/POS test for thermal receipt printers (Bixolon BC-95AC, Epson TM, etc.).
+pub fn thermal_test_escpos() -> &'static [u8] {
+    b"\x1b@\x1ba\x01\n\n*** Finvoroo ***\nPrint Agent test\n\nTest print OK\n\n\n\n\n\n\x1b\x64\x04\x1dVA\x00"
 }
 
 /// One-page A4 PDF used for test prints on Windows GDI printers.
@@ -147,6 +175,7 @@ mod tests {
         assert_eq!(JobKind::parse("raw").unwrap(), JobKind::Raw);
         assert_eq!(JobKind::parse("escpos").unwrap(), JobKind::EscPos);
         assert_eq!(JobKind::parse("esc/pos").unwrap(), JobKind::EscPos);
+        assert_eq!(JobKind::parse("html").unwrap(), JobKind::Html);
         assert!(JobKind::parse("shell").is_err());
         assert!(JobKind::EscPos.is_raw_spooler());
         assert!(!JobKind::Pdf.is_raw_spooler());
@@ -170,5 +199,6 @@ mod tests {
         assert_eq!(classify_printer("HP LaserJet", None), "windows");
         assert_eq!(classify_printer("Zebra ZD421", Some("ZDesigner")), "zebra");
         assert_eq!(classify_printer("EPSON TM-T20", None), "thermal");
+        assert_eq!(classify_printer("BC-95AC", Some("BIXOLON")), "thermal");
     }
 }

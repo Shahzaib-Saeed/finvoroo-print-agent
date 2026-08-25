@@ -12,7 +12,7 @@ Windows printer (USB, network, or local)
 Receipt / Invoice / Label
 ```
 
-Laravel checkout, FEFO, and journals are not involved. The agent only prints bytes the browser already has (PDF, ESC/POS, ZPL). Do **not** install the agent on the Laravel server.
+Laravel checkout, FEFO, and journals are not involved. The agent prints PDF, HTML thermal receipts, ESC/POS, and ZPL. Do **not** install the agent on the Laravel server.
 
 ## Client vs developer
 
@@ -28,7 +28,7 @@ Laravel checkout, FEFO, and journals are not involved. The agent only prints byt
 - Token is **never** returned from `GET /status`
 - `POST /pair` returns the token only after a 60-second PIN shown in the agent window
 - Print jobs require `X-Finvoroo-Print-Token` (or `Authorization: Bearer`)
-- Body cap 32 MB; print types are `pdf | zpl | escpos | raw` only
+- Body cap 32 MB; print types are `pdf | html | zpl | escpos | raw`
 - The agent never executes shell commands from request payloads
 - Print errors append to the app log dir (`print-agent.log`)
 
@@ -51,7 +51,27 @@ Laravel checkout, FEFO, and journals are not involved. The agent only prints byt
 ### POST /print
 
 ```json
-{ "printer_id": "HP LaserJet", "type": "pdf|escpos|zpl|raw", "data": "...", "encoding": "base64|plain" }
+{
+  "printer_id": "POS 80",
+  "type": "pdf|html|escpos|zpl|raw",
+  "data": "...",
+  "encoding": "base64|plain",
+  "options": { "paper_mm": 58, "open_drawer": true }
+}
+```
+
+- **`html`** — full HTML document from `buildThermalHtmlDocument()` (ThermalReceiptBody CSS). Rendered silently by a persistent WebView2 engine at tray startup; uses `ICoreWebView2::Print()` to the named printer (no Chrome dialog).
+- **`options.paper_mm`** — `58` or `80` for thermal receipts (optional, default `80`). Margins match Chrome `@page` (2 mm / 3 mm).
+- **`options.open_drawer`** — after a successful `html` print, sends a tiny ESC/POS drawer pulse on the same printer (optional, default `false`).
+- **`pdf` / `zpl` / `escpos` / `raw`** — unchanged from prior releases.
+
+Example HTML receipt curl (after pairing):
+
+```bat
+curl -s -X POST http://127.0.0.1:17392/print ^
+  -H "Content-Type: application/json" ^
+  -H "X-Finvoroo-Print-Token: YOUR_TOKEN" ^
+  -d "{\"printer_id\":\"POS 80\",\"type\":\"html\",\"encoding\":\"plain\",\"data\":\"<!DOCTYPE html><html>...</html>\",\"options\":{\"paper_mm\":80,\"open_drawer\":true}}"
 ```
 
 ## Windows installer
@@ -83,6 +103,7 @@ Legacy `finvoroo.print_agent.enabled=true` + saved token maps to `finvoroo-agent
 Workstation printers (localStorage, never hard-coded names):
 
 - Receipt → `finvoroo.print_agent.receipt_printer` (falls back to `printer_id`)
+- Receipt paper → `finvoroo.receipt_paper` (`thermal_58` | `thermal_80`)
 - Invoice → `finvoroo.print_agent.invoice_printer`
 - Label → `finvoroo.print_agent.label_printer`
 

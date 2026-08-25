@@ -8,6 +8,10 @@ pub fn list_printers() -> anyhow::Result<Vec<PrinterInfo>> {
     Ok(Vec::new())
 }
 
+pub fn init_html_engine() -> anyhow::Result<()> {
+    Ok(())
+}
+
 pub fn print_job(req: &PrintRequest) -> anyhow::Result<()> {
     let _ = JobKind::parse(&req.job_type)?;
     bail!(
