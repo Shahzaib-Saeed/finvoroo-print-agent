@@ -1,46 +1,38 @@
-# Developer/CI only: produces FinvorooPrintAgent-Setup.exe
-# Pharmacies never run this workflow. They only download and run the .exe.
-
-name: Print Agent Windows installer
+name: Print Agent Windows
 
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'print-agent-v*'
+    branches:
+      - main
 
 jobs:
-  windows-nsis:
+  build-windows:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: finvoroo-print-agent
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: 20
+          cache: npm
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
-      - name: Generate icons
-        run: python scripts/generate-icons.py
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Install npm dependencies
-        run: npm install
-
-      - name: Build standalone NSIS installer
+      - name: Build Windows installer
         run: npm run build
 
-      - name: Upload FinvorooPrintAgent-Setup.exe
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: FinvorooPrintAgent-Setup
-          path: |
-            finvoroo-print-agent/src-tauri/target/release/bundle/nsis/FinvorooPrintAgent-Setup.exe
-            finvoroo-print-agent/dist/FinvorooPrintAgent-Setup.exe
-          if-no-files-found: error
+          name: FinvorooPrintAgent-Windows
+          path: src-tauri/target/release/bundle/nsis/*.exe
