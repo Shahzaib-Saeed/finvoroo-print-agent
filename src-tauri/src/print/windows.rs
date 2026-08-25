@@ -31,6 +31,9 @@ use super::{
 };
 
 const ESCPOS_OPEN_DRAWER: &[u8] = &[0x1b, 0x70, 0x00, 0x19, 0xfa];
+/// Feed a few lines then GS V 66 n (feed n×0.125mm and cut). Thermal HTML jobs
+/// otherwise leave the last row on page 2 and never fire the auto-cutter.
+const ESCPOS_FEED_AND_CUT: &[u8] = &[0x0a, 0x0a, 0x0a, 0x1d, 0x56, 0x42, 0x30];
 
 pub fn init_html_engine() -> Result<()> {
     html_engine::init()
@@ -139,6 +142,9 @@ pub fn print_job(req: &PrintRequest) -> Result<()> {
             bail!("options.paper_mm must be 58 or 80");
         }
         html_engine::print_html(&req.printer_id, &req.data, paper_mm)?;
+        if let Err(err) = print_raw(&req.printer_id, ESCPOS_FEED_AND_CUT) {
+            tracing::warn!("thermal cut after HTML print failed: {err:#}");
+        }
         if req
             .options
             .as_ref()

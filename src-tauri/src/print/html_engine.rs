@@ -129,7 +129,7 @@ fn render_and_print(
     }
 
     wait_navigation(&handles.webview, html)?;
-    thread::sleep(Duration::from_millis(120));
+    wait_for_layout(&handles.webview);
     silent_print(&handles.env, &handles.webview, printer, paper_mm)
 }
 
@@ -196,18 +196,33 @@ fn silent_print(
         .cast()
         .context("WebView2 printer settings (ICoreWebView2PrintSettings2) are unavailable")?;
 
-    let margin_in = if paper_mm <= 58 { 0.08 } else { 0.12 };
     let width_in = (paper_mm as f64) / 25.4;
-    // Chrome uses `@page { size: 80mm auto }`. WebView2 ignores `auto` and defaults
-    // to Letter (~11in), so leftover lines become a second slip and the cutter fires
-    // between pages. Size the page to the rendered receipt plus cutter feed.
-    let content_px = measure_content_height_px(webview).unwrap_or_else(|err| {
-        tracing::warn!("html print height measure failed ({err:#}); using 22in fallback");
+    // Chrome uses `@page { size: 80mm auto }`. WebView2 treats `auto` as ~0 and
+    // then shrink-to-fits the receipt (looks like 0.001 font on 80mm). A 1" floor
+    // does the same. Measure the real receipt; if that fails, use a tall roll.
+    let content_px = measure_content_height_px(webview).unwrap_or(0.0);
+    let content_px = if content_px < 80.0 {
+        tracing::warn!(
+            "html print height {content_px}px is implausible; using 22in roll fallback"
+        );
         22.0 * 96.0
-    });
-    let content_in = (content_px / 96.0).max(1.0);
-    let cutter_in = 10.0 / 25.4;
-    let page_height_in = (content_in + margin_in * 2.0 + cutter_in).min(80.0);
+    } else {
+        content_px
+    };
+    // CSS @page already has 2–3mm. Extra WebView2 margins shrink the printable
+    // area so the last rows spill onto page 2 and the cutter fires between pages.
+    let cutter_in = 12.0 / 25.4;
+    let page_height_in = ((content_px / 96.0) * 1.30 + cutter_in).min(80.0);
+    let page_height_mm = page_height_in * 25.4;
+    tracing::info!(
+        paper_mm,
+        content_px,
+        page_height_in,
+        "html print page size"
+    );
+    if let Err(err) = inject_page_size(webview, paper_mm, page_height_mm) {
+        tracing::warn!("html print @page override failed: {err:#}");
+    }
 
     unsafe {
         let printer_name = CoTaskMemPWSTR::from(printer);
@@ -219,10 +234,10 @@ fn silent_print(
             let _ = base.SetScaleFactor(1.0);
             let _ = base.SetShouldPrintBackgrounds(true);
             let _ = base.SetShouldPrintHeaderAndFooter(false);
-            let _ = base.SetMarginTop(margin_in);
-            let _ = base.SetMarginBottom(margin_in);
-            let _ = base.SetMarginLeft(margin_in);
-            let _ = base.SetMarginRight(margin_in);
+            let _ = base.SetMarginTop(0.0);
+            let _ = base.SetMarginBottom(0.0);
+            let _ = base.SetMarginLeft(0.0);
+            let _ = base.SetMarginRight(0.0);
             let _ = base.SetPageWidth(width_in);
             let _ = base.SetPageHeight(page_height_in);
         }
@@ -252,21 +267,93 @@ fn silent_print(
     wait_with_pump_timeout(rx, PRINT_TIMEOUT)?
 }
 
+fn wait_for_layout(webview: &ICoreWebView2) {
+    let deadline = Instant::now() + Duration::from_millis(800);
+    loop {
+        let ready = execute_script(
+            webview,
+            r#"(function(){
+  var imgs = document.images;
+  if (!imgs.length) return 1;
+  for (var i = 0; i < imgs.length; i++) {
+    if (!imgs[i].complete) return 0;
+  }
+  return 1;
+})()"#,
+        )
+        .ok()
+        .map(|json| json.trim().trim_matches('"') == "1")
+        .unwrap_or(false);
+        if ready || Instant::now() >= deadline {
+            break;
+        }
+        pump_for(Duration::from_millis(50));
+    }
+    pump_for(Duration::from_millis(80));
+}
+
+fn inject_page_size(webview: &ICoreWebView2, paper_mm: u32, height_mm: f64) -> Result<()> {
+    let js = format!(
+        r#"(function(){{
+  var old = document.getElementById('finvoroo-page-size');
+  if (old) old.remove();
+  var s = document.createElement('style');
+  s.id = 'finvoroo-page-size';
+  s.textContent = '@page {{ size: {paper_mm}mm {height_mm:.2f}mm; margin: 2mm; }}'
+    + 'html, body, #pos-receipt-print, .thermal-receipt-body {{'
+    + 'page-break-inside: auto !important; break-inside: auto !important; }}'
+    + 'html.print-thermal-receipt-only body, html.print-thermal-receipt-only body * {{'
+    + 'visibility: visible !important; }}';
+  document.head.appendChild(s);
+  return 1;
+}})()"#
+    );
+    execute_script(webview, &js)?;
+    Ok(())
+}
+
 fn measure_content_height_px(webview: &ICoreWebView2) -> Result<f64> {
     const JS: &str = r#"(function(){
-  var root = document.documentElement;
-  var body = document.body;
-  var extra = document.getElementById('pos-receipt-print');
-  var h = 0;
-  [root, body, extra].forEach(function (n) {
-    if (!n) return;
-    h = Math.max(h, n.scrollHeight || 0, n.offsetHeight || 0, n.clientHeight || 0);
-  });
+  var mm = (document.documentElement.className || '').indexOf('print-thermal-receipt-58') >= 0 ? 58 : 80;
+  var root = document.getElementById('pos-receipt-print') || document.body;
+  var targets = [root, document.body, document.querySelector('.thermal-receipt-body')];
+  for (var t = 0; t < targets.length; t++) {
+    var el = targets[t];
+    if (!el || !el.style) continue;
+    el.style.setProperty('position','static','important');
+    el.style.setProperty('left','auto','important');
+    el.style.setProperty('top','auto','important');
+    el.style.setProperty('transform','none','important');
+    el.style.setProperty('visibility','visible','important');
+    el.style.setProperty('display','block','important');
+    el.style.setProperty('width', mm + 'mm','important');
+    el.style.setProperty('max-width', mm + 'mm','important');
+    el.style.setProperty('overflow','visible','important');
+  }
+  void document.body.offsetHeight;
+  var origin = root.getBoundingClientRect();
+  var h = Math.max(root.scrollHeight || 0, root.offsetHeight || 0, origin.height || 0);
+  var list = root.querySelectorAll('*');
+  for (var i = 0; i < list.length; i++) {
+    var r = list[i].getBoundingClientRect();
+    h = Math.max(h, r.bottom - origin.top, list[i].scrollHeight || 0, list[i].offsetHeight || 0);
+  }
   return Math.ceil(h);
 })()"#;
 
+    let json = execute_script(webview, JS)?;
+    let trimmed = json.trim().trim_matches('"');
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+        bail!("content height script returned {json}");
+    }
+    trimmed
+        .parse::<f64>()
+        .with_context(|| format!("content height json {json}"))
+}
+
+fn execute_script(webview: &ICoreWebView2, js: &str) -> Result<String> {
     let (tx, rx) = mpsc::channel();
-    let js = CoTaskMemPWSTR::from(JS);
+    let js = CoTaskMemPWSTR::from(js);
     unsafe {
         webview.ExecuteScript(
             *js.as_ref().as_pcwstr(),
@@ -277,14 +364,21 @@ fn measure_content_height_px(webview: &ICoreWebView2) -> Result<f64> {
             })),
         )?;
     }
-    let json = wait_with_pump_timeout(rx, Duration::from_secs(10))?;
-    let trimmed = json.trim().trim_matches('"');
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
-        bail!("content height script returned {json}");
+    wait_with_pump_timeout(rx, Duration::from_secs(10))
+}
+
+fn pump_for(dur: Duration) {
+    let deadline = Instant::now() + dur;
+    let mut msg = MSG::default();
+    while Instant::now() < deadline {
+        unsafe {
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        thread::sleep(Duration::from_millis(5));
     }
-    trimmed
-        .parse::<f64>()
-        .with_context(|| format!("content height json {json}"))
 }
 
 unsafe fn create_hidden_window() -> Result<HWND> {
