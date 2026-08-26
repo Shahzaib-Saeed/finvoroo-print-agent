@@ -18,15 +18,17 @@ pub const BLACK_THRESHOLD: u8 = 176;
 
 /// `(layout width in mm, head width in dots)` for a roll size.
 ///
-/// The receipt is laid out at the full roll width — the same width the CSS was
-/// written for — and mapped onto the printable dots of the head: 384 for a 58mm
-/// roll, 576 for an 80mm roll. Nothing is cropped and the receipt reaches both
-/// edges of the printable area.
+/// The layout width is the *printable* width, not the roll width: a 203 dpi head
+/// burns 8 dots/mm, so 384 dots covers 48mm of a 58mm roll and 576 dots covers
+/// 72mm of an 80mm roll, centred with unprintable paper either side.
+///
+/// Laying out at the roll width instead would squeeze the whole receipt to ~90%,
+/// which is what made printed text smaller than the design intends.
 pub fn paper_geometry(paper_mm: u32) -> (u32, u32) {
     if paper_mm <= 58 {
-        (58, 384)
+        (48, 384)
     } else {
-        (80, 576)
+        (72, 576)
     }
 }
 
@@ -124,7 +126,18 @@ pub fn escpos_payload(bitmap: &MonoBitmap) -> Vec<u8> {
     let stride = bitmap.stride();
     let mut out = Vec::with_capacity(bitmap.bits.len() + 256);
     out.extend_from_slice(&[0x1b, 0x40]); // ESC @   — reset
+
+    // `ESC @` restores the printer's saved settings, which on many units includes a
+    // non-zero left margin. That offset would push the bitmap right and shove the
+    // same number of dots off the right edge, so set the origin and the print area
+    // explicitly rather than trusting the reset.
+    out.extend_from_slice(&[0x1d, 0x4c, 0x00, 0x00]); // GS L 0 0 — left margin = 0
+    let area = bitmap.width.min(0xffff) as u16;
+    out.extend_from_slice(&[0x1d, 0x57]); // GS W    — print area width
+    out.push((area & 0xff) as u8);
+    out.push((area >> 8) as u8);
     out.extend_from_slice(&[0x1b, 0x61, 0x00]); // ESC a 0 — left align
+    out.extend_from_slice(&[0x1b, 0x24, 0x00, 0x00]); // ESC $ 0 0 — start at dot 0
 
     let mut row = 0;
     while row < bitmap.height {
@@ -150,9 +163,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn geometry_matches_head_width() {
-        assert_eq!(paper_geometry(58), (58, 384));
-        assert_eq!(paper_geometry(80), (80, 576));
+    fn geometry_uses_printable_width_not_roll_width() {
+        assert_eq!(paper_geometry(58), (48, 384));
+        assert_eq!(paper_geometry(80), (72, 576));
+    }
+
+    /// 8 dots/mm at 203 dpi: the layout width must be exactly the width the head
+    /// can cover, or the receipt prints squeezed or clipped.
+    #[test]
+    fn geometry_layout_width_matches_dot_pitch() {
+        for roll in [58, 80] {
+            let (layout_mm, dots) = paper_geometry(roll);
+            assert_eq!(dots, layout_mm * 8, "{roll}mm roll");
+        }
     }
 
     /// Scale must make the receipt exactly as wide as the head, whatever the roll.
@@ -167,6 +190,21 @@ mod tests {
                 "{roll}mm rendered {rendered} px for {dots} dots"
             );
             assert!(scale > 1.0 && scale < 3.0, "{roll}mm scale was {scale}");
+        }
+    }
+
+    /// One CSS mm must print as one physical mm — that is 203/96 device pixels.
+    /// Any other value means the receipt is scaled up or down on paper.
+    #[test]
+    fn scale_is_the_dpi_ratio() {
+        let expected = 203.2 / 96.0;
+        for roll in [58, 80] {
+            let (layout_mm, dots) = paper_geometry(roll);
+            let scale = rasterization_scale(layout_mm, dots);
+            assert!(
+                (scale - expected).abs() < 0.01,
+                "{roll}mm scale {scale}, expected about {expected}"
+            );
         }
     }
 
@@ -230,6 +268,46 @@ mod tests {
             .filter(|w| *w == [0x1d, 0x56, 0x42, 0x30])
             .count();
         assert_eq!(cuts, 1, "exactly one cut per receipt");
+    }
+
+    /// A saved left margin is the classic cause of a receipt drifting right with
+    /// the right-hand characters missing, so the payload must zero it every time.
+    #[test]
+    fn payload_zeroes_left_margin_and_claims_full_print_width() {
+        let luma = vec![0u8; 576 * 2];
+        let bitmap = pack_luma(576, 2, &luma, 576, BLACK_THRESHOLD);
+        let payload = escpos_payload(&bitmap);
+
+        let margin_at = payload
+            .windows(4)
+            .position(|w| w == [0x1d, 0x4c, 0x00, 0x00])
+            .expect("GS L 0 0 left margin reset");
+        let area_at = payload
+            .windows(4)
+            .position(|w| w == [0x1d, 0x57, 0x40, 0x02])
+            .expect("GS W print area of 576 dots");
+        let band_at = payload
+            .windows(4)
+            .position(|w| w == [0x1d, 0x76, 0x30, 0x00])
+            .expect("band header");
+
+        // Origin and width have to be established before any image data.
+        assert!(margin_at < band_at, "left margin reset must precede the image");
+        assert!(area_at < band_at, "print area must precede the image");
+    }
+
+    #[test]
+    fn payload_sets_print_area_to_the_narrow_roll_width() {
+        let luma = vec![0u8; 384];
+        let bitmap = pack_luma(384, 1, &luma, 384, BLACK_THRESHOLD);
+        let payload = escpos_payload(&bitmap);
+        // 384 = 0x0180 -> nL 0x80, nH 0x01
+        assert!(
+            payload
+                .windows(4)
+                .any(|w| w == [0x1d, 0x57, 0x80, 0x01]),
+            "58mm print area should be 384 dots"
+        );
     }
 
     #[test]

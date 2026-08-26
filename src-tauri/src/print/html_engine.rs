@@ -506,6 +506,10 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     el.style.setProperty('transform','none','important');
     el.style.setProperty('visibility','visible','important');
     el.style.setProperty('display','block','important');
+    // border-box keeps any padding inside the printable width. Under content-box
+    // the padding is added to it, which drifts the receipt right and pushes the
+    // overflow off the right-hand edge.
+    el.style.setProperty('box-sizing','border-box','important');
     el.style.setProperty('width', mm + 'mm','important');
     el.style.setProperty('max-width', mm + 'mm','important');
     el.style.setProperty('overflow','visible','important');
@@ -517,7 +521,13 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     noBars = document.createElement('style');
     noBars.id = 'finvoroo-no-scrollbars';
     noBars.textContent = 'html, body {{ overflow: hidden !important; }}'
-      + '::-webkit-scrollbar {{ display: none !important; width: 0 !important; }}';
+      + '::-webkit-scrollbar {{ display: none !important; width: 0 !important; }}'
+      // Nothing inside the receipt may be wider than the head, and no element may
+      // be nudged sideways by a stray margin or transform.
+      + '#pos-receipt-print, #pos-receipt-print * {{'
+      + ' box-sizing: border-box !important;'
+      + ' max-width: 100% !important;'
+      + ' transform: none !important; }}';
     document.head.appendChild(noBars);
   }}
   void document.body.offsetHeight;
