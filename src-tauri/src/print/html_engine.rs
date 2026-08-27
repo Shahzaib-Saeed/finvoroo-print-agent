@@ -235,7 +235,7 @@ unsafe fn resize_surface(handles: &EngineHandles, width: u32, height: u32) -> Re
         })
         .context("SetBounds for capture surface")?;
     handles.controller.SetIsVisible(true)?;
-    pump_for(Duration::from_millis(160));
+    pump_for(Duration::from_millis(40));
     Ok(())
 }
 
@@ -440,7 +440,7 @@ fn silent_print(
 }
 
 fn wait_for_layout(webview: &ICoreWebView2) {
-    let deadline = Instant::now() + Duration::from_millis(800);
+    let deadline = Instant::now() + Duration::from_millis(280);
     loop {
         let ready = execute_script(
             webview,
@@ -448,7 +448,10 @@ fn wait_for_layout(webview: &ICoreWebView2) {
   var imgs = document.images;
   if (!imgs.length) return 1;
   for (var i = 0; i < imgs.length; i++) {
+    var src = imgs[i].currentSrc || imgs[i].src || "";
+    if (src.indexOf("data:") === 0 && imgs[i].naturalWidth > 0) continue;
     if (!imgs[i].complete) return 0;
+    if (imgs[i].naturalWidth === 0) return 0;
   }
   return 1;
 })()"#,
@@ -459,9 +462,9 @@ fn wait_for_layout(webview: &ICoreWebView2) {
         if ready || Instant::now() >= deadline {
             break;
         }
-        pump_for(Duration::from_millis(50));
+        pump_for(Duration::from_millis(16));
     }
-    pump_for(Duration::from_millis(80));
+    pump_for(Duration::from_millis(20));
 }
 
 fn inject_page_size(webview: &ICoreWebView2, paper_mm: u32, height_mm: f64) -> Result<()> {
