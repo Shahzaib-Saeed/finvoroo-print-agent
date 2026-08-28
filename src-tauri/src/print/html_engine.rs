@@ -190,7 +190,7 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32) -> Result<Vec<u8>> {
     }
     // A few slack pixels keep a rounded-down last line inside the capture. The
     // extra white is trimmed off again before the cut.
-    let height_dots = (((height_css + 4.0) * scale).ceil() as u32)
+    let height_dots = ((height_css * scale).ceil() as u32)
         .min(escpos_raster::MAX_RASTER_ROWS);
 
     unsafe { resize_surface(handles, width_dots, height_dots)? };

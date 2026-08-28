@@ -108,3 +108,79 @@ button:disabled { opacity: 0.55; cursor: default; }
   letter-spacing: 0.18em;
   font-variant-numeric: tabular-nums;
 }
+
+.card--version {
+  border-color: #bae6fd;
+  background: linear-gradient(180deg, #f0f9ff 0%, #ffffff 72%);
+}
+
+.version-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.version-kicker {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.version-current {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#version {
+  font-size: 24px;
+  letter-spacing: 0.02em;
+}
+
+.version-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #059669;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.version-note {
+  max-width: 180px;
+  text-align: right;
+  margin: 0;
+}
+
+.version-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.version-stat {
+  display: grid;
+  gap: 4px;
+}
+
+.version-stat-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.version-stat strong {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}

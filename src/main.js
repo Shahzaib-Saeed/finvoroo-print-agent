@@ -12,7 +12,22 @@ async function load() {
   const status = await invoke('agent_status');
   const settings = await invoke('agent_settings');
   $('status-label').textContent = 'Running';
-  $('version').textContent = status.version || '1.0.0';
+  const version = status.version || '1.0.0';
+  $('version').textContent = `v${version}`;
+  $('installed-version').textContent = status.installed_version
+    ? `v${status.installed_version}`
+    : `v${version}`;
+  const previous = status.previous_version || settings.previous_version;
+  $('previous-version').textContent = previous ? `v${previous}` : 'First install';
+  const noteEl = $('version-note');
+  const badgeEl = $('version-badge');
+  if (previous && previous !== version) {
+    noteEl.textContent = `Updated from v${previous}`;
+    badgeEl.hidden = false;
+  } else {
+    noteEl.textContent = 'Receipt printing · pairing · tray';
+    badgeEl.hidden = true;
+  }
   $('api').textContent = `127.0.0.1:${settings.port || 17392}`;
   $('platform').textContent = settings.platform || '';
   $('token').textContent = settings.token || '';

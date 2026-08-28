@@ -36,6 +36,8 @@ async fn agent_status(state: tauri::State<'_, AppState>) -> Result<serde_json::V
     Ok(serde_json::json!({
         "running": true,
         "version": VERSION,
+        "previous_version": cfg.previous_version,
+        "installed_version": cfg.installed_version,
         "port": cfg.port,
         "autostart": true,
         "platform": std::env::consts::OS,
@@ -48,6 +50,8 @@ async fn agent_settings(state: tauri::State<'_, AppState>) -> Result<serde_json:
     let cfg = state.config.read().await;
     Ok(serde_json::json!({
         "version": VERSION,
+        "previous_version": cfg.previous_version,
+        "installed_version": cfg.installed_version,
         "port": cfg.port,
         "token": cfg.token,
         "default_printer_id": cfg.default_printer_id,
@@ -147,7 +151,10 @@ pub fn run() {
         ))
         .setup(|app| {
             let config_path = config::config_file_path(app.handle())?;
-            let cfg = config::AgentConfig::load_or_create(&config_path)?;
+            let mut cfg = config::AgentConfig::load_or_create(&config_path)?;
+            if cfg.apply_version_tracking(VERSION) {
+                cfg.save(&config_path)?;
+            }
             let first_run = cfg.first_run;
             let port = cfg.port;
             let log_path = app

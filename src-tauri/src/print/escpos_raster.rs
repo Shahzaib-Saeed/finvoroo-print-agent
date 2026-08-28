@@ -96,12 +96,19 @@ pub fn trim_leading_blank_rows(bitmap: MonoBitmap) -> MonoBitmap {
     }
 
     let mut first_inked = None;
-    for y in 0..bitmap.height {
+    'rows: for y in 0..bitmap.height {
         let start = y as usize * stride;
         let row = &bitmap.bits[start..start + stride];
-        if row.iter().any(|byte| *byte != 0) {
-            first_inked = Some(y);
-            break;
+        let mut dots = 0u32;
+        for byte in row {
+            if *byte == 0 {
+                continue;
+            }
+            dots += byte.count_ones();
+            if dots > 2 {
+                first_inked = Some(y);
+                break 'rows;
+            }
         }
     }
 
@@ -160,6 +167,7 @@ pub fn escpos_payload(bitmap: &MonoBitmap) -> Vec<u8> {
     let stride = bitmap.stride();
     let mut out = Vec::with_capacity(bitmap.bits.len() + 256);
     out.extend_from_slice(&[0x1b, 0x40]); // ESC @   — reset
+    out.extend_from_slice(&[0x1b, 0x4a, 0x00]); // ESC J 0 — no feed after reset
 
     // `ESC @` restores the printer's saved settings, which on many units includes a
     // non-zero left margin. That offset would push the bitmap right and shove the
@@ -277,7 +285,9 @@ mod tests {
     #[test]
     fn trim_leading_drops_top_whitespace() {
         let mut luma = vec![255u8; 8 * 10];
-        luma[8 * 7] = 0; // ink on row 7 only
+        for i in 0..3 {
+            luma[8 * 7 + i] = 0; // ink on row 7
+        }
         let bitmap = pack_luma(8, 10, &luma, 8, BLACK_THRESHOLD);
         let trimmed = trim_leading_blank_rows(bitmap);
         assert_eq!(trimmed.height, 3);

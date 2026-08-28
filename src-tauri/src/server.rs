@@ -89,10 +89,13 @@ pub fn http_state(app: AppState) -> HttpState {
     }
 }
 
-async fn status() -> impl IntoResponse {
+async fn status(State(state): State<HttpState>) -> impl IntoResponse {
+    let cfg = state.app.config.read().await;
     Json(serde_json::json!({
         "running": true,
         "version": VERSION,
+        "previous_version": cfg.previous_version,
+        "installed_version": cfg.installed_version,
         "bind": "127.0.0.1",
         "platform": std::env::consts::OS,
         "auth_required": true,

@@ -20,6 +20,12 @@ pub struct AgentConfig {
     pub paired_at: Option<String>,
     #[serde(default)]
     pub first_run: bool,
+    /// Last version written by this agent build (used to detect upgrades).
+    #[serde(default)]
+    pub installed_version: Option<String>,
+    /// Version immediately before the current install (shown after an update).
+    #[serde(default)]
+    pub previous_version: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -31,11 +37,26 @@ impl Default for AgentConfig {
             paired_origin: None,
             paired_at: None,
             first_run: true,
+            installed_version: None,
+            previous_version: None,
         }
     }
 }
 
 impl AgentConfig {
+    /// Record a version change when the agent binary is newer than config.
+    pub fn apply_version_tracking(&mut self, current: &str) -> bool {
+        let prior = self.installed_version.clone();
+        if prior.as_deref() == Some(current) {
+            return false;
+        }
+        if let Some(old) = prior.filter(|v| v != current) {
+            self.previous_version = Some(old);
+        }
+        self.installed_version = Some(current.to_string());
+        true
+    }
+
     pub fn load_or_create(path: &Path) -> Result<Self> {
         if path.exists() {
             let raw = fs::read_to_string(path)
