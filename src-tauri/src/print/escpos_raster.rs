@@ -88,6 +88,40 @@ pub fn pack_luma(
     }
 }
 
+/// Drop blank rows at the top so captured HTML whitespace does not feed out as paper.
+pub fn trim_leading_blank_rows(bitmap: MonoBitmap) -> MonoBitmap {
+    let stride = bitmap.stride();
+    if stride == 0 {
+        return bitmap;
+    }
+
+    let mut first_inked = None;
+    for y in 0..bitmap.height {
+        let start = y as usize * stride;
+        let row = &bitmap.bits[start..start + stride];
+        if row.iter().any(|byte| *byte != 0) {
+            first_inked = Some(y);
+            break;
+        }
+    }
+
+    let Some(first_inked) = first_inked else {
+        return bitmap;
+    };
+
+    if first_inked == 0 {
+        return bitmap;
+    }
+
+    let new_height = bitmap.height - first_inked;
+    let start = first_inked as usize * stride;
+    MonoBitmap {
+        width: bitmap.width,
+        height: new_height,
+        bits: bitmap.bits[start..].to_vec(),
+    }
+}
+
 /// Drop blank rows at the bottom so a short sale does not eject a viewport of
 /// blank paper, and keep a little margin before the cut.
 pub fn trim_trailing_blank_rows(bitmap: MonoBitmap, keep_rows: u32) -> MonoBitmap {
@@ -238,6 +272,16 @@ mod tests {
         let trimmed = trim_trailing_blank_rows(bitmap, 3);
         assert_eq!(trimmed.height, 6);
         assert_eq!(trimmed.bits.len(), 6);
+    }
+
+    #[test]
+    fn trim_leading_drops_top_whitespace() {
+        let mut luma = vec![255u8; 8 * 10];
+        luma[8 * 7] = 0; // ink on row 7 only
+        let bitmap = pack_luma(8, 10, &luma, 8, BLACK_THRESHOLD);
+        let trimmed = trim_leading_blank_rows(bitmap);
+        assert_eq!(trimmed.height, 3);
+        assert_eq!(trimmed.bits.len(), 3);
     }
 
     #[test]

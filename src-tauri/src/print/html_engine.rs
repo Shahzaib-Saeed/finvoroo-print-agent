@@ -209,6 +209,7 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32) -> Result<Vec<u8>> {
         bail!("captured receipt is blank");
     }
 
+    let bitmap = escpos_raster::trim_leading_blank_rows(bitmap);
     let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, TRAILING_DOT_ROWS);
     Ok(escpos_raster::escpos_payload(&bitmap))
 }
@@ -474,7 +475,7 @@ fn inject_page_size(webview: &ICoreWebView2, paper_mm: u32, height_mm: f64) -> R
   if (old) old.remove();
   var s = document.createElement('style');
   s.id = 'finvoroo-page-size';
-  s.textContent = '@page {{ size: {paper_mm}mm {height_mm:.2}mm; margin: 2mm; }}'
+  s.textContent = '@page {{ size: {paper_mm}mm {height_mm:.2}mm; margin: 0; }}'
     + 'html, body, #pos-receipt-print, .thermal-receipt-body {{'
     + 'page-break-inside: auto !important; break-inside: auto !important; }}'
     + 'html.print-thermal-receipt-only body, html.print-thermal-receipt-only body * {{'
@@ -517,6 +518,9 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     el.style.setProperty('max-width', mm + 'mm','important');
     el.style.setProperty('overflow','visible','important');
     el.style.setProperty('background','#fff','important');
+    if (el.classList && el.classList.contains('thermal-receipt-body')) {{
+      el.style.setProperty('padding-top','0','important');
+    }}
   }}
   // A scrollbar would narrow the layout and shift the capture, so suppress it.
   var noBars = document.getElementById('finvoroo-no-scrollbars');
