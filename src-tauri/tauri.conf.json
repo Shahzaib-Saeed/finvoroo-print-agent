@@ -29,10 +29,22 @@
       "tooltip": "Finvoroo Print Agent"
     }
   },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://app.finvoroo.com/downloads/print-agent-latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDOTE5MzRBMzdGQURCQTgKUldTbzIvbzNTcE9STEhHNWhMOUh5WWdnekYwNWcxUnJmSEF5djRqa2Y2TlUzcWUzblRKdWNyQ0kK",
+      "windows": {
+        "installMode": "quiet"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "publisher": "Finvoroo",
     "homepage": "https://finvoroo.com",
     "icon": [
