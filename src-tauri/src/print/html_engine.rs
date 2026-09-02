@@ -494,7 +494,9 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     let js = format!(
         r#"(function(){{
   var mm = {layout_mm};
-  var root = document.getElementById('pos-receipt-print') || document.body;
+  var root = document.getElementById('pos-receipt-print')
+    || document.querySelector('.finvoroo-canvas-fit')
+    || document.body;
   var targets = [document.documentElement, document.body, root,
     document.querySelector('.thermal-print-source'),
     document.querySelector('.thermal-receipt-stage'),
@@ -503,6 +505,12 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
   for (var t = 0; t < targets.length; t++) {{
     var el = targets[t];
     if (!el || !el.style) continue;
+    if (el.classList && el.classList.contains('finvoroo-canvas-fit')) {{
+      el.style.setProperty('visibility','visible','important');
+      el.style.setProperty('display','block','important');
+      el.style.setProperty('overflow','visible','important');
+      continue;
+    }}
     el.style.setProperty('position','static','important');
     el.style.setProperty('left','auto','important');
     el.style.setProperty('top','auto','important');
@@ -531,7 +539,7 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
       + '::-webkit-scrollbar {{ display: none !important; width: 0 !important; }}'
       // Nothing inside the receipt may be wider than the head, and no element may
       // be nudged sideways by a stray margin or transform.
-      + '#pos-receipt-print, #pos-receipt-print * {{'
+      + '#pos-receipt-print, #pos-receipt-print *:not(.finvoroo-canvas-fit):not(.finvoroo-canvas-fit *) {{'
       + ' box-sizing: border-box !important;'
       + ' max-width: 100% !important;'
       + ' transform: none !important; }}';

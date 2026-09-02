@@ -11,7 +11,9 @@ pub mod config;
 pub mod pairing;
 pub mod print;
 pub mod server;
+pub mod updater;
 
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tauri::menu::{Menu, MenuItem};
@@ -28,6 +30,9 @@ pub struct AppState {
     pub config_path: std::path::PathBuf,
     pub pairing: Arc<pairing::PairingStore>,
     pub log_path: std::path::PathBuf,
+    /// Epoch-millis timestamp of the last `/print` request, so the auto-updater
+    /// (see `updater.rs`) never installs while a receipt is mid-print. 0 = never.
+    pub last_print_at: Arc<AtomicU64>,
 }
 
 #[tauri::command]
@@ -149,6 +154,7 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec![]),
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let config_path = config::config_file_path(app.handle())?;
             let mut cfg = config::AgentConfig::load_or_create(&config_path)?;
@@ -171,8 +177,11 @@ pub fn run() {
                 config_path,
                 pairing: Arc::new(pairing::PairingStore::default()),
                 log_path,
+                last_print_at: Arc::new(AtomicU64::new(0)),
             };
             app.manage(state.clone());
+
+            updater::spawn(app.handle().clone());
 
             #[cfg(windows)]
             if let Err(err) = print::init_html_engine() {

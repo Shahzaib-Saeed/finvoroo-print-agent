@@ -205,6 +205,13 @@ async fn print_handler(
         }
         *last = Some(Instant::now());
     }
+    // Epoch-millis mirror of the instant above so the auto-updater (a plain
+    // AppHandle, not this HTTP layer's HttpState) can tell "printing right now"
+    // apart from "idle" without needing access to a non-Send std::time::Instant.
+    state
+        .app
+        .last_print_at
+        .store(chrono_now_millis(), std::sync::atomic::Ordering::Relaxed);
 
     if req.printer_id.trim().is_empty() {
         return error_response(StatusCode::UNPROCESSABLE_ENTITY, "printer_id is required");
@@ -270,6 +277,13 @@ fn chrono_now() -> String {
     format!("{now}")
 }
 
+fn chrono_now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
     let body = Json(ErrorBody {
         ok: false,
@@ -305,6 +319,8 @@ mod tests {
             paired_origin: None,
             paired_at: None,
             first_run: false,
+            installed_version: None,
+            previous_version: None,
         };
         cfg.save(&config_path).unwrap();
         AppState {
@@ -312,6 +328,7 @@ mod tests {
             config_path,
             pairing: Arc::new(PairingStore::default()),
             log_path: dir.join("print-agent.log"),
+            last_print_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -435,5 +452,64 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Measures the real localhost round trip for `/print` over an actual TCP
+    /// socket (not `oneshot`, which skips the network stack) — auth check,
+    /// JSON decode, the in-flight dedupe lock, and the `spawn_blocking` dispatch
+    /// into `print::print_job`. On this (non-Windows) build the Win32 spooler
+    /// call itself is stubbed out and returns immediately with an error, so this
+    /// isolates exactly the local HTTP-layer cost the React client pays before
+    /// physical printing starts. Confirms there is no hidden multi-second
+    /// round trip anywhere in the agent's own request handling.
+    #[tokio::test]
+    async fn print_localhost_roundtrip_latency() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        let state = test_state();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(http_state(state));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let body = br#"{"printer_id":"Test Printer","type":"raw","data":"AA==","encoding":"base64"}"#;
+        let mut durations = Vec::with_capacity(20);
+        for i in 0..20u32 {
+            let start = std::time::Instant::now();
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            let request = format!(
+                "POST /print HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Finvoroo-Print-Token: test-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).await.unwrap();
+            durations.push(start.elapsed());
+            assert!(
+                resp.starts_with(b"HTTP/1.1"),
+                "unexpected response: {}",
+                String::from_utf8_lossy(&resp)
+            );
+            // Stay outside the 80ms in-flight dedupe window between requests.
+            if i < 19 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+
+        let max = *durations.iter().max().unwrap();
+        let avg = durations.iter().sum::<std::time::Duration>() / durations.len() as u32;
+        eprintln!(
+            "print-agent /print localhost round trip over {} real requests: avg={avg:?} max={max:?}",
+            durations.len()
+        );
+        assert!(
+            max < std::time::Duration::from_millis(200),
+            "local /print HTTP round trip too slow: {max:?} (target: milliseconds, not seconds)"
+        );
     }
 }

@@ -1,42 +1,48 @@
 # Updates for the installed Print Agent
 
-Pharmacies **never** need Node.js, Rust, npm, or developer tools to update.
+Pharmacies **never** need Node.js, Rust, npm, or developer tools to install or update.
 
-## Current production path (supported)
+## Install once, update automatically (current)
 
-1. Developer builds a new `FinvorooPrintAgent-Setup.exe` (`npm run build` on a Windows machine or GitHub Actions).
-2. Pharmacy downloads the new `.exe` and runs it.
-3. The NSIS installer replaces the application files under the install directory.
-4. Pairing, token, and default printer stay in `%APPDATA%\com.finvoroo.print-agent\` (not deleted on update or uninstall).
-5. After install, the tray agent starts again.
+1. Pharmacy installs `FinvorooPrintAgent-Setup.exe` once (see `CLIENT.md`).
+2. From then on, the running tray agent checks `plugins.updater.endpoints` (see
+   `src-tauri/tauri.conf.json`) on startup and every hour (`src-tauri/src/updater.rs`).
+3. When a newer signed release exists, it is downloaded in the background and its
+   **minisign signature is verified** before anything is installed — an unsigned or
+   tampered installer is rejected automatically.
+4. The agent waits until no `/print` request has started in the last 15 seconds
+   (`AppState::last_print_at`, capped at a 10-minute wait) so an update never lands
+   mid-receipt, then runs the installer silently (`windows.installMode: "quiet"`)
+   and restarts the tray — invisible to the cashier.
+5. Pairing, token, and default printer stay in `%APPDATA%\com.finvoroo.print-agent\`
+   (NSIS `currentUser` installs never touch AppData on install/uninstall).
 
-Until a code-signing certificate and Tauri updater keys exist, **this installer-based update is the only supported client update path**.
+This uses [tauri-plugin-updater](https://v2.tauri.app/plugin/updater/) with an
+Ed25519 (minisign) keypair generated once offline. This is independent of a
+Windows Authenticode certificate — Authenticode is optional (it only affects
+SmartScreen warnings on a manually double-clicked download) and is **not**
+required for the signed-update verification above.
 
-Do **not** enable `bundle.createUpdaterArtifacts` until those keys are in CI secrets. Enabling it without keys makes `tauri build` fail.
+## Publishing a new release
 
-## Future: signed in-app updater
+1. Bump `version` in `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`.
+2. CI (`.github/workflows/print-agent-windows.yml`) builds with
+   `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets set,
+   which makes `tauri build` (via `createUpdaterArtifacts: true`) emit a `.sig`
+   file next to the NSIS installer.
+3. `npm run build` (which runs `scripts/publish-installer.mjs`) assembles
+   `dist/print-agent-latest.json` — the Tauri-updater manifest — from that
+   signature, alongside the renamed `FinvorooPrintAgent-Setup.exe`.
+4. Upload `FinvorooPrintAgent-Setup.exe` **and** `print-agent-latest.json` to
+   `app.finvoroo.com/downloads/` (manual upload today, same as the installer
+   always has been — see the CI artifact for both files).
+5. Installed agents pick it up on their next hourly check (or next restart).
 
-Do **not** download an unsigned `.exe` from an arbitrary URL.
+## Keys
 
-Use [tauri-plugin-updater](https://v2.tauri.app/plugin/updater/) once Finvoroo has:
-
-1. A Windows Authenticode certificate
-2. A static JSON endpoint with version, notes, and artifact URLs
-3. Minisign / Tauri updater keys in CI **secrets** (never in git)
-
-Suggested layout:
-
-```text
-https://downloads.finvoroo.com/print-agent/latest.json
-https://downloads.finvoroo.com/print-agent/FinvorooPrintAgent-Setup.exe
-https://downloads.finvoroo.com/print-agent/FinvorooPrintAgent-Setup.exe.sig
-```
-
-`latest.json` (Tauri v2 format) must include the signature. The agent verifies it **before** replacing the binary. The client still does not need Node.js or Rust.
-
-## Rollout checklist (when signing is ready)
-
-1. Generate updater keypair offline; store the private key in CI
-2. Add `tauri-plugin-updater` + a “Check for updates” tray item
-3. Set `createUpdaterArtifacts` to `true` and publish NSIS installer + signature from the same pipeline as `npm run build`
-4. Keep pairing token and printer names across updates (config stays in AppData)
+The signing keypair (`tauri signer generate`) was generated once, offline. The
+private key + its password live **only** in this repo's GitHub Actions secrets
+(`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) — never in
+git. The public key is committed in `src-tauri/tauri.conf.json`
+(`plugins.updater.pubkey`); losing the private key means a new keypair (and a
+new pubkey shipped in the next manually-installed release) is required.

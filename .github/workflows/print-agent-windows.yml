@@ -39,7 +39,25 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run build
+        run: npx tauri build --bundles nsis
+
+      - name: Publish installer + updater manifest
+        run: npm run publish-installer
+
+      - name: Verify signed updater manifest
+        if: startsWith(github.ref, 'refs/tags/print-agent-v')
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'dist/print-agent-latest.json')) {
+            Write-Error 'Missing dist/print-agent-latest.json — signing key or publish-installer failed.'
+            exit 1
+          }
+          $manifest = Get-Content 'dist/print-agent-latest.json' -Raw | ConvertFrom-Json
+          if (-not $manifest.platforms.'windows-x86_64'.signature) {
+            Write-Error 'print-agent-latest.json has no windows-x86_64 signature.'
+            exit 1
+          }
+          Write-Host "Updater manifest OK (v$($manifest.version))."
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
