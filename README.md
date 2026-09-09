@@ -36,7 +36,7 @@ Test print
 Done
 ```
 
-1. Download **FinvorooPrintAgent-Setup.exe** (current release **v1.1.8**).
+1. Download **FinvorooPrintAgent-Setup.exe** (current release **v1.1.9**).
 2. Run it and click through the installer (current-user install; no extra admin setup).
 3. The Print Agent starts automatically and sits in the system tray.
 4. It also starts with Windows after reboot.

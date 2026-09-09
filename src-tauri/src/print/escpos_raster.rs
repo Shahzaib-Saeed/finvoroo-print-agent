@@ -139,6 +139,53 @@ pub fn trim_leading_blank_columns(bitmap: MonoBitmap) -> MonoBitmap {
     }
 }
 
+/// Expand (or crop) a bitmap to exactly the head width, left-aligned. Many thermal
+/// heads centre images that are narrower than the print area, which looks like a
+/// right shift on 80 mm paper.
+pub fn pad_bitmap_to_head(bitmap: MonoBitmap, head_width_dots: u32) -> MonoBitmap {
+    if bitmap.width == 0 || bitmap.height == 0 || head_width_dots == 0 {
+        return bitmap;
+    }
+
+    if bitmap.width > head_width_dots {
+        let stride = bitmap.stride();
+        let new_stride = ((head_width_dots + 7) / 8) as usize;
+        let mut new_bits = vec![0u8; new_stride * bitmap.height as usize];
+        for y in 0..bitmap.height {
+            let old_row = y as usize * stride;
+            let new_row = y as usize * new_stride;
+            new_bits[new_row..new_row + new_stride]
+                .copy_from_slice(&bitmap.bits[old_row..old_row + new_stride]);
+        }
+        return MonoBitmap {
+            width: head_width_dots,
+            height: bitmap.height,
+            bits: new_bits,
+        };
+    }
+
+    if bitmap.width == head_width_dots {
+        return bitmap;
+    }
+
+    let old_stride = bitmap.stride();
+    let new_stride = ((head_width_dots + 7) / 8) as usize;
+    let mut new_bits = vec![0u8; new_stride * bitmap.height as usize];
+    for y in 0..bitmap.height {
+        let old_row = y as usize * old_stride;
+        let new_row = y as usize * new_stride;
+        let copy_bytes = old_stride.min(new_stride);
+        new_bits[new_row..new_row + copy_bytes]
+            .copy_from_slice(&bitmap.bits[old_row..old_row + copy_bytes]);
+    }
+
+    MonoBitmap {
+        width: head_width_dots,
+        height: bitmap.height,
+        bits: new_bits,
+    }
+}
+
 /// Drop blank rows at the top so captured HTML whitespace does not feed out as paper.
 pub fn trim_leading_blank_rows(bitmap: MonoBitmap) -> MonoBitmap {
     let stride = bitmap.stride();
@@ -150,7 +197,7 @@ pub fn trim_leading_blank_rows(bitmap: MonoBitmap) -> MonoBitmap {
     'rows: for y in 0..bitmap.height {
         let start = y as usize * stride;
         let row = &bitmap.bits[start..start + stride];
-        if row.iter().any(|byte| *byte != 0) {
+        if row_dot_count(row) >= TRIM_TRAILING_MIN_DOTS {
             first_inked = Some(y);
             break 'rows;
         }
@@ -249,8 +296,8 @@ pub fn escpos_payload(bitmap: &MonoBitmap, head_width_dots: u32) -> Vec<u8> {
         row += rows;
     }
 
-    // GS V 66 16 — feed 2mm past the last dot row, then partial cut (no ESC d line feeds).
-    out.extend_from_slice(&[0x1d, 0x56, 0x42, 0x10]);
+    // GS V 66 8 — feed ~1mm past the last dot row, then partial cut.
+    out.extend_from_slice(&[0x1d, 0x56, 0x42, 0x08]);
     out
 }
 
@@ -329,7 +376,9 @@ mod tests {
     #[test]
     fn trim_keeps_ink_and_requested_margin() {
         let mut luma = vec![255u8; 8 * 10];
-        luma[8 * 2] = 0; // ink on row 2 only
+        for i in 0..8 {
+            luma[8 * 2 + i] = 0; // solid rule on row 2
+        }
         let bitmap = pack_luma(8, 10, &luma, 8, BLACK_THRESHOLD);
         let trimmed = trim_trailing_blank_rows(bitmap, 3);
         assert_eq!(trimmed.height, 6);
@@ -339,13 +388,23 @@ mod tests {
     #[test]
     fn trim_leading_drops_top_whitespace() {
         let mut luma = vec![255u8; 8 * 10];
-        for i in 0..3 {
-            luma[8 * 7 + i] = 0; // ink on row 7
+        for i in 0..8 {
+            luma[8 * 7 + i] = 0; // solid rule on row 7
         }
         let bitmap = pack_luma(8, 10, &luma, 8, BLACK_THRESHOLD);
         let trimmed = trim_leading_blank_rows(bitmap);
         assert_eq!(trimmed.height, 3);
         assert_eq!(trimmed.bits.len(), 3);
+    }
+
+    #[test]
+    fn pad_bitmap_to_head_left_aligns_narrow_capture() {
+        let luma = vec![0u8; 8 * 2];
+        let bitmap = pack_luma(8, 2, &luma, 8, BLACK_THRESHOLD);
+        let padded = pad_bitmap_to_head(bitmap, 16);
+        assert_eq!(padded.width, 16);
+        assert_eq!(padded.stride(), 2);
+        assert_eq!(padded.bits.len(), 4);
     }
 
     #[test]
@@ -363,7 +422,7 @@ mod tests {
         let payload = escpos_payload(&bitmap, 8);
 
         assert!(payload.starts_with(&[0x1b, 0x40]));
-        assert!(payload.ends_with(&[0x1d, 0x56, 0x42, 0x10]));
+        assert!(payload.ends_with(&[0x1d, 0x56, 0x42, 0x08]));
 
         let bands = payload
             .windows(4)
@@ -373,7 +432,7 @@ mod tests {
 
         let cuts = payload
             .windows(4)
-            .filter(|w| *w == [0x1d, 0x56, 0x42, 0x10])
+            .filter(|w| *w == [0x1d, 0x56, 0x42, 0x08])
             .count();
         assert_eq!(cuts, 1, "exactly one cut per receipt");
     }

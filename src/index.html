@@ -9,7 +9,7 @@
   <body>
     <main class="shell">
       <header>
-        <img class="brand-logo" src="finvoroo-logo.png" width="44" height="44" alt="Finvoroo" />
+        <img class="brand-logo" id="brand-logo" width="44" height="44" alt="Finvoroo" />
         <div class="brand-copy">
           <div class="brand-title-row">
             <h1>Finvoroo Print Agent</h1>
@@ -40,6 +40,10 @@
             <strong id="previous-version">—</strong>
           </div>
         </div>
+        <p class="version-hint muted">
+          You should see the Finvoroo logo above and <strong>v1.1.9</strong> here. If not, run the latest
+          <strong>FinvorooPrintAgent-Setup.exe</strong> installer on this PC.
+        </p>
       </section>
 
       <section class="card">
@@ -96,6 +100,7 @@
         <p class="muted" id="message"></p>
       </section>
     </main>
+    <script src="brand.js"></script>
     <script src="main.js"></script>
   </body>
 </html>

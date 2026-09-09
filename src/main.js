@@ -1,6 +1,18 @@
 const invoke = window.__TAURI__.core.invoke;
+const BUNDLED = window.FINVOROO_AGENT || { version: '1.1.9', logoSrc: '' };
 
 const $ = (id) => document.getElementById(id);
+
+function applyBundledBranding() {
+  const version = BUNDLED.version || '1.1.9';
+  $('version').textContent = `v${version}`;
+  $('header-version').textContent = `v${version}`;
+  document.title = `Finvoroo Print Agent v${version}`;
+  const logo = $('brand-logo');
+  if (logo && BUNDLED.logoSrc) {
+    logo.src = BUNDLED.logoSrc;
+  }
+}
 
 function setMessage(text, isError = false) {
   const el = $('message');
@@ -8,18 +20,15 @@ function setMessage(text, isError = false) {
   el.style.color = isError ? '#b42318' : '';
 }
 
-async function load() {
-  const status = await invoke('agent_status');
-  const settings = await invoke('agent_settings');
-  $('status-label').textContent = 'Running';
-  const version = status.version || '1.0.0';
+function applyRuntimeStatus(status, settings) {
+  const version = status?.version || BUNDLED.version || '1.1.9';
   $('version').textContent = `v${version}`;
   $('header-version').textContent = `v${version}`;
   document.title = `Finvoroo Print Agent v${version}`;
-  $('installed-version').textContent = status.installed_version
+  $('installed-version').textContent = status?.installed_version
     ? `v${status.installed_version}`
     : `v${version}`;
-  const previous = status.previous_version || settings.previous_version;
+  const previous = status?.previous_version || settings?.previous_version;
   $('previous-version').textContent = previous ? `v${previous}` : 'First install';
   const noteEl = $('version-note');
   const badgeEl = $('version-badge');
@@ -30,9 +39,18 @@ async function load() {
     noteEl.textContent = 'Receipt printing · pairing · tray';
     badgeEl.hidden = true;
   }
-  $('api').textContent = `127.0.0.1:${settings.port || 17392}`;
-  $('platform').textContent = settings.platform || '';
-  $('token').textContent = settings.token || '';
+  $('api').textContent = `127.0.0.1:${settings?.port || 17392}`;
+  $('platform').textContent = settings?.platform || '';
+  $('token').textContent = settings?.token || '';
+}
+
+applyBundledBranding();
+
+async function load() {
+  const status = await invoke('agent_status');
+  const settings = await invoke('agent_settings');
+  $('status-label').textContent = 'Running';
+  applyRuntimeStatus(status, settings);
   await refreshPrinters(settings.default_printer_id || '');
 }
 

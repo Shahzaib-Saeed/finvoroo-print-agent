@@ -71,7 +71,7 @@ const CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The render window lives off every monitor so nothing flashes on the till.
 const OFFSCREEN_ORIGIN: i32 = -30_000;
 /// Blank paper left after the last dot, so the cut does not clip a descender.
-const TRAILING_DOT_ROWS: u32 = 4;
+const TRAILING_DOT_ROWS: u32 = 2;
 
 pub fn init() -> Result<()> {
     if JOB_TX.get().is_some() {
@@ -274,6 +274,7 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32) -> Result<Vec<u8>> {
     let bitmap = escpos_raster::trim_leading_blank_rows(bitmap);
     let bitmap = escpos_raster::trim_leading_blank_columns(bitmap);
     let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, TRAILING_DOT_ROWS);
+    let bitmap = escpos_raster::pad_bitmap_to_head(bitmap, width_dots);
     Ok(escpos_raster::escpos_payload(&bitmap, width_dots))
 }
 
@@ -617,8 +618,8 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     if (el.classList && el.classList.contains('thermal-receipt-body')) {{
       el.style.setProperty('padding-top','0','important');
       el.style.setProperty('padding-bottom','0','important');
-      el.style.setProperty('padding-left','3px','important');
-      el.style.setProperty('padding-right','3px','important');
+      el.style.setProperty('padding-left','0','important');
+      el.style.setProperty('padding-right','0','important');
     }}
     if (el.classList && el.classList.contains('thermal-header')) {{
       el.style.setProperty('margin','0','important');
