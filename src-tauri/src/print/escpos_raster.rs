@@ -140,6 +140,28 @@ pub fn trim_leading_blank_columns(bitmap: MonoBitmap) -> MonoBitmap {
     }
 }
 
+/// Extra left margin some heads still apply to raster jobs after `GS L 0`.
+/// 8mm (64 dots) matches the 80mm CSS safe pad so the shift eats gutter, not ink.
+pub fn left_margin_nudge_dots(printer: &str, paper_mm: u32) -> u32 {
+    let hay = printer.to_ascii_lowercase();
+    let bixolon = hay.contains("bixolon")
+        || hay.contains("srp-")
+        || hay.contains("srp ")
+        || hay.contains("srp330")
+        || hay.contains("srp350")
+        || hay.contains("srp382")
+        || hay.contains("bc-95")
+        || hay.contains("bc95ac");
+    if !bixolon {
+        return 0;
+    }
+    if paper_mm <= 58 {
+        32
+    } else {
+        64
+    }
+}
+
 /// Expand (or crop) a bitmap to exactly the head width, left-aligned. Many thermal
 /// heads centre images that are narrower than the print area, which looks like a
 /// right shift on 80 mm paper.
@@ -185,6 +207,43 @@ pub fn pad_bitmap_to_head(bitmap: MonoBitmap, head_width_dots: u32) -> MonoBitma
         height: bitmap.height,
         bits: new_bits,
     }
+}
+
+/// Move content left by `dots`, filling the right with white. Used to cancel a
+/// printer leftover left margin. The 80mm CSS gutter is 64 dots, so a 64-dot
+/// nudge on Bixolon eats padding rather than clipping the table.
+pub fn shift_content_left(bitmap: MonoBitmap, dots: u32) -> MonoBitmap {
+    if dots == 0 || bitmap.width <= dots {
+        return bitmap;
+    }
+
+    let orig_width = bitmap.width;
+    let stride = bitmap.stride();
+    let new_width = bitmap.width - dots;
+    let new_stride = ((new_width + 7) / 8) as usize;
+    let mut new_bits = vec![0u8; new_stride * bitmap.height as usize];
+
+    for y in 0..bitmap.height {
+        for x in dots..bitmap.width {
+            let src_byte = y as usize * stride + (x / 8) as usize;
+            let src_mask = 0x80u8 >> (x % 8);
+            if bitmap.bits.get(src_byte).map(|b| b & src_mask != 0).unwrap_or(false) {
+                let dx = x - dots;
+                let dst_byte = y as usize * new_stride + (dx / 8) as usize;
+                let dst_mask = 0x80u8 >> (dx % 8);
+                new_bits[dst_byte] |= dst_mask;
+            }
+        }
+    }
+
+    pad_bitmap_to_head(
+        MonoBitmap {
+            width: new_width,
+            height: bitmap.height,
+            bits: new_bits,
+        },
+        orig_width,
+    )
 }
 
 /// Drop blank rows at the top so captured HTML whitespace does not feed out as paper.
@@ -362,6 +421,29 @@ mod tests {
         // 200 and 207 are below 208 — typical anti-aliased logo ink.
         assert_eq!(bitmap.bits[0] & 0b1100_0000, 0b1100_0000);
         assert_eq!(bitmap.bits[0] & 0b0011_0000, 0);
+    }
+
+    #[test]
+    fn bixolon_gets_an_8mm_left_nudge_on_80mm() {
+        assert_eq!(left_margin_nudge_dots("Bixolon SRP-350plusIII", 80), 64);
+        assert_eq!(left_margin_nudge_dots("BC-95AC", 80), 64);
+        assert_eq!(left_margin_nudge_dots("Black Copper POS-80", 80), 0);
+        assert_eq!(left_margin_nudge_dots("Xprinter XP-N160II", 80), 0);
+        assert_eq!(left_margin_nudge_dots("Bixolon SRP-330", 58), 32);
+    }
+
+    #[test]
+    fn shift_content_left_moves_ink_without_changing_width() {
+        // 16 dots wide, ink in the rightmost 8 columns.
+        let mut luma = vec![255u8; 16];
+        for i in 8..16 {
+            luma[i] = 0;
+        }
+        let bitmap = pack_luma(16, 1, &luma, 16, BLACK_THRESHOLD);
+        let shifted = shift_content_left(bitmap, 8);
+        assert_eq!(shifted.width, 16);
+        assert_eq!(shifted.bits[0], 0b1111_1111);
+        assert_eq!(shifted.bits[1], 0);
     }
 
     #[test]

@@ -183,7 +183,7 @@ fn run_prewarm(handles: &EngineHandles, paper_mm: u32) -> Result<()> {
     let html = prewarm_html(layout_mm);
     load_receipt_html(&handles.webview, &html)?;
     wait_for_layout(&handles.webview, true);
-    match render_raster(handles, paper_mm) {
+    match render_raster(handles, paper_mm, "") {
         Ok(_) => {
             tracing::info!(paper_mm, "html print engine prewarmed");
             Ok(())
@@ -217,7 +217,7 @@ fn render_and_print(
     load_receipt_html(&handles.webview, html)?;
     wait_for_layout(&handles.webview, !html_has_remote_images(html));
 
-    match render_raster(handles, paper_mm) {
+    match render_raster(handles, paper_mm, printer) {
         Ok(payload) => return Ok(HtmlOutcome::Raster(payload)),
         Err(err) => tracing::warn!(
             "receipt raster failed, falling back to driver print: {err:#}"
@@ -230,7 +230,7 @@ fn render_and_print(
 
 /// Render the receipt at the printer's dot pitch and turn it into an ESC/POS bit
 /// image. This is the path that avoids driver page sizes entirely.
-fn render_raster(handles: &EngineHandles, paper_mm: u32) -> Result<Vec<u8>> {
+fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Result<Vec<u8>> {
     let (layout_mm, width_dots) = escpos_raster::paper_geometry(paper_mm);
     let scale = escpos_raster::rasterization_scale(layout_mm, width_dots);
 
@@ -272,10 +272,13 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32) -> Result<Vec<u8>> {
     }
 
     let bitmap = escpos_raster::trim_leading_blank_rows(bitmap);
-    // Do not trim leading columns: that would strip the left safe pad and
-    // left-align the ticket. Bixolon leftover margins then shove it right.
     let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, TRAILING_DOT_ROWS);
     let bitmap = escpos_raster::pad_bitmap_to_head(bitmap, width_dots);
+    let nudge = escpos_raster::left_margin_nudge_dots(printer, paper_mm);
+    let bitmap = escpos_raster::shift_content_left(bitmap, nudge);
+    if nudge > 0 {
+        tracing::info!(printer, nudge, "applied printer left-margin nudge");
+    }
     Ok(escpos_raster::escpos_payload(&bitmap, width_dots))
 }
 
@@ -620,7 +623,7 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     if (el.classList && el.classList.contains('thermal-receipt-body')) {{
       el.style.setProperty('padding-top','0','important');
       el.style.setProperty('padding-bottom','0','important');
-      var pad = mm >= 72 ? '4mm' : '2.5mm';
+      var pad = mm >= 72 ? '8mm' : '3mm';
       el.style.setProperty('padding-left', pad, 'important');
       el.style.setProperty('padding-right', pad, 'important');
     }}
