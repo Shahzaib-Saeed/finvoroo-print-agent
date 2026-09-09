@@ -1,10 +1,10 @@
 const invoke = window.__TAURI__.core.invoke;
-const BUNDLED = window.FINVOROO_AGENT || { version: '1.1.9', logoSrc: '' };
+const BUNDLED = window.FINVOROO_AGENT || { version: '1.1.10', logoSrc: '' };
 
 const $ = (id) => document.getElementById(id);
 
 function applyBundledBranding() {
-  const version = BUNDLED.version || '1.1.9';
+  const version = BUNDLED.version || '1.1.10';
   $('version').textContent = `v${version}`;
   $('header-version').textContent = `v${version}`;
   document.title = `Finvoroo Print Agent v${version}`;
@@ -21,7 +21,7 @@ function setMessage(text, isError = false) {
 }
 
 function applyRuntimeStatus(status, settings) {
-  const version = status?.version || BUNDLED.version || '1.1.9';
+  const version = status?.version || BUNDLED.version || '1.1.10';
   $('version').textContent = `v${version}`;
   $('header-version').textContent = `v${version}`;
   document.title = `Finvoroo Print Agent v${version}`;

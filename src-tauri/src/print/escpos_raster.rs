@@ -12,9 +12,10 @@ const BAND_ROWS: u32 = 128;
 /// ~1.5 m of paper. Anything longer is a runaway receipt, not a real sale.
 pub const MAX_RASTER_ROWS: u32 = 12_000;
 
-/// Luma below this burns a dot. Receipts are text and rules, so a hard threshold
-/// stays crisp where dithering would turn small glyphs into grey mush.
-pub const BLACK_THRESHOLD: u8 = 176;
+/// Luma below this burns a dot. A higher cutoff turns anti-aliased logo edges
+/// and small glyphs solid black, which weaker heads (Black Copper) can actually
+/// mark. Dithering is still avoided — grey mush on thermal paper looks faded.
+pub const BLACK_THRESHOLD: u8 = 208;
 
 /// `(layout width in mm, head width in dots)` for a roll size.
 ///
@@ -281,6 +282,9 @@ pub fn escpos_payload(bitmap: &MonoBitmap, head_width_dots: u32) -> Vec<u8> {
     let stride = bitmap.stride();
     let mut out = Vec::with_capacity(bitmap.bits.len() + 256);
     write_escpos_init(&mut out, head_width_dots);
+    // Bixolon restores NV left margin between init and the first raster band.
+    out.extend_from_slice(&[0x1d, 0x4c, 0x00, 0x00]); // GS L 0 0
+    out.extend_from_slice(&[0x1b, 0x24, 0x00, 0x00]); // ESC $ 0 0
 
     let mut row = 0;
     while row < bitmap.height {
@@ -349,6 +353,15 @@ mod tests {
                 "{roll}mm scale {scale}, expected about {expected}"
             );
         }
+    }
+
+    #[test]
+    fn grey_logo_edges_burn_instead_of_fading() {
+        let luma = [200u8, 207, 220, 255];
+        let bitmap = pack_luma(4, 1, &luma, 8, BLACK_THRESHOLD);
+        // 200 and 207 are below 208 — typical anti-aliased logo ink.
+        assert_eq!(bitmap.bits[0] & 0b1100_0000, 0b1100_0000);
+        assert_eq!(bitmap.bits[0] & 0b0011_0000, 0);
     }
 
     #[test]

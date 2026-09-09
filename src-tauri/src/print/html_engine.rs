@@ -272,7 +272,8 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32) -> Result<Vec<u8>> {
     }
 
     let bitmap = escpos_raster::trim_leading_blank_rows(bitmap);
-    let bitmap = escpos_raster::trim_leading_blank_columns(bitmap);
+    // Do not trim leading columns: that would strip the left safe pad and
+    // left-align the ticket. Bixolon leftover margins then shove it right.
     let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, TRAILING_DOT_ROWS);
     let bitmap = escpos_raster::pad_bitmap_to_head(bitmap, width_dots);
     Ok(escpos_raster::escpos_payload(&bitmap, width_dots))
@@ -300,7 +301,7 @@ unsafe fn resize_surface(handles: &EngineHandles, width: u32, height: u32) -> Re
         })
         .context("SetBounds for capture surface")?;
     handles.controller.SetIsVisible(true)?;
-    pump_for(Duration::from_millis(12));
+    pump_for(Duration::from_millis(6));
     Ok(())
 }
 
@@ -324,7 +325,7 @@ fn load_receipt_html(webview: &ICoreWebView2, html: &str) -> Result<()> {
 }})()"#
     );
     execute_script(webview, &js)?;
-    pump_for(Duration::from_millis(8));
+    pump_for(Duration::from_millis(4));
     Ok(())
 }
 
@@ -530,9 +531,10 @@ fn silent_print(
 
 fn wait_for_layout(webview: &ICoreWebView2, fast: bool) {
     let deadline =
-        Instant::now() + Duration::from_millis(if fast { 80 } else { 350 });
+        Instant::now() + Duration::from_millis(if fast { 24 } else { 80 });
+    let mut ready = false;
     loop {
-        let ready = execute_script(
+        ready = execute_script(
             webview,
             r#"(function(){
   var imgs = document.images;
@@ -552,9 +554,9 @@ fn wait_for_layout(webview: &ICoreWebView2, fast: bool) {
         if ready || Instant::now() >= deadline {
             break;
         }
-        pump_for(Duration::from_millis(16));
+        pump_for(Duration::from_millis(8));
     }
-    pump_for(Duration::from_millis(8));
+    pump_for(Duration::from_millis(if ready { 2 } else { 6 }));
 }
 
 fn inject_page_size(webview: &ICoreWebView2, paper_mm: u32, height_mm: f64) -> Result<()> {
@@ -618,8 +620,9 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     if (el.classList && el.classList.contains('thermal-receipt-body')) {{
       el.style.setProperty('padding-top','0','important');
       el.style.setProperty('padding-bottom','0','important');
-      el.style.setProperty('padding-left','0','important');
-      el.style.setProperty('padding-right','0','important');
+      var pad = mm >= 72 ? '4mm' : '2.5mm';
+      el.style.setProperty('padding-left', pad, 'important');
+      el.style.setProperty('padding-right', pad, 'important');
     }}
     if (el.classList && el.classList.contains('thermal-header')) {{
       el.style.setProperty('margin','0','important');
