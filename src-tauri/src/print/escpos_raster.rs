@@ -88,6 +88,57 @@ pub fn pack_luma(
     }
 }
 
+/// Drop blank columns on the left so a mis-sized capture does not drift right on paper.
+pub fn trim_leading_blank_columns(bitmap: MonoBitmap) -> MonoBitmap {
+    let stride = bitmap.stride();
+    if stride == 0 || bitmap.width == 0 {
+        return bitmap;
+    }
+
+    let mut first_col: Option<u32> = None;
+    'search: for x in 0..bitmap.width {
+        for y in 0..bitmap.height {
+            let byte_idx = y as usize * stride + (x / 8) as usize;
+            let mask = 0x80u8 >> (x % 8);
+            if bitmap.bits.get(byte_idx).map(|b| b & mask != 0).unwrap_or(false) {
+                first_col = Some(x);
+                break 'search;
+            }
+        }
+    }
+
+    let Some(col) = first_col else {
+        return bitmap;
+    };
+    if col == 0 {
+        return bitmap;
+    }
+
+    let new_width = bitmap.width - col;
+    let new_stride = ((new_width + 7) / 8) as usize;
+    let mut new_bits = vec![0u8; new_stride * bitmap.height as usize];
+
+    for y in 0..bitmap.height {
+        for x in col..bitmap.width {
+            let src_byte = y as usize * stride + (x / 8) as usize;
+            let src_mask = 0x80u8 >> (x % 8);
+            if bitmap.bits[src_byte] & src_mask == 0 {
+                continue;
+            }
+            let dx = x - col;
+            let dst_byte = y as usize * new_stride + (dx / 8) as usize;
+            let dst_mask = 0x80u8 >> (dx % 8);
+            new_bits[dst_byte] |= dst_mask;
+        }
+    }
+
+    MonoBitmap {
+        width: new_width,
+        height: bitmap.height,
+        bits: new_bits,
+    }
+}
+
 /// Drop blank rows at the top so captured HTML whitespace does not feed out as paper.
 pub fn trim_leading_blank_rows(bitmap: MonoBitmap) -> MonoBitmap {
     let stride = bitmap.stride();
@@ -99,16 +150,9 @@ pub fn trim_leading_blank_rows(bitmap: MonoBitmap) -> MonoBitmap {
     'rows: for y in 0..bitmap.height {
         let start = y as usize * stride;
         let row = &bitmap.bits[start..start + stride];
-        let mut dots = 0u32;
-        for byte in row {
-            if *byte == 0 {
-                continue;
-            }
-            dots += byte.count_ones();
-            if dots > 2 {
-                first_inked = Some(y);
-                break 'rows;
-            }
+        if row.iter().any(|byte| *byte != 0) {
+            first_inked = Some(y);
+            break 'rows;
         }
     }
 
@@ -129,6 +173,13 @@ pub fn trim_leading_blank_rows(bitmap: MonoBitmap) -> MonoBitmap {
     }
 }
 
+/// Ignore JPEG/capture speckle — real receipt rules and text burn many more dots.
+const TRIM_TRAILING_MIN_DOTS: u32 = 4;
+
+fn row_dot_count(row: &[u8]) -> u32 {
+    row.iter().map(|b| b.count_ones()).sum()
+}
+
 /// Drop blank rows at the bottom so a short sale does not eject a viewport of
 /// blank paper, and keep a little margin before the cut.
 pub fn trim_trailing_blank_rows(bitmap: MonoBitmap, keep_rows: u32) -> MonoBitmap {
@@ -141,7 +192,7 @@ pub fn trim_trailing_blank_rows(bitmap: MonoBitmap, keep_rows: u32) -> MonoBitma
     for y in (0..bitmap.height).rev() {
         let start = y as usize * stride;
         let row = &bitmap.bits[start..start + stride];
-        if row.iter().any(|byte| *byte != 0) {
+        if row_dot_count(row) >= TRIM_TRAILING_MIN_DOTS {
             last_inked = Some(y);
             break;
         }
@@ -161,25 +212,28 @@ pub fn trim_trailing_blank_rows(bitmap: MonoBitmap, keep_rows: u32) -> MonoBitma
     }
 }
 
-/// Wrap a bitmap in an ESC/POS job: reset, print the bit image in bands, then feed
-/// clear of the head and cut once.
-pub fn escpos_payload(bitmap: &MonoBitmap) -> Vec<u8> {
-    let stride = bitmap.stride();
-    let mut out = Vec::with_capacity(bitmap.bits.len() + 256);
+/// Zero left margin and claim the full head width before raster data. Bixolon units
+/// often restore a saved NV margin on `ESC @`, so margin and width are asserted twice.
+fn write_escpos_init(out: &mut Vec<u8>, head_width_dots: u32) {
     out.extend_from_slice(&[0x1b, 0x40]); // ESC @   — reset
+    out.extend_from_slice(&[0x1b, 0x4d, 0x00]); // ESC M 0 — standard mode
     out.extend_from_slice(&[0x1b, 0x4a, 0x00]); // ESC J 0 — no feed after reset
-
-    // `ESC @` restores the printer's saved settings, which on many units includes a
-    // non-zero left margin. That offset would push the bitmap right and shove the
-    // same number of dots off the right edge, so set the origin and the print area
-    // explicitly rather than trusting the reset.
     out.extend_from_slice(&[0x1d, 0x4c, 0x00, 0x00]); // GS L 0 0 — left margin = 0
-    let area = bitmap.width.min(0xffff) as u16;
-    out.extend_from_slice(&[0x1d, 0x57]); // GS W    — print area width
+    out.extend_from_slice(&[0x1d, 0x4c, 0x00, 0x00]); // GS L 0 0 — re-assert (Bixolon NV)
+    let area = head_width_dots.min(0xffff) as u16;
+    out.extend_from_slice(&[0x1d, 0x57]); // GS W    — print area = full head width
     out.push((area & 0xff) as u8);
     out.push((area >> 8) as u8);
     out.extend_from_slice(&[0x1b, 0x61, 0x00]); // ESC a 0 — left align
     out.extend_from_slice(&[0x1b, 0x24, 0x00, 0x00]); // ESC $ 0 0 — start at dot 0
+}
+
+/// Wrap a bitmap in an ESC/POS job: reset, print the bit image in bands, then feed
+/// clear of the head and cut once.
+pub fn escpos_payload(bitmap: &MonoBitmap, head_width_dots: u32) -> Vec<u8> {
+    let stride = bitmap.stride();
+    let mut out = Vec::with_capacity(bitmap.bits.len() + 256);
+    write_escpos_init(&mut out, head_width_dots);
 
     let mut row = 0;
     while row < bitmap.height {
@@ -195,8 +249,8 @@ pub fn escpos_payload(bitmap: &MonoBitmap) -> Vec<u8> {
         row += rows;
     }
 
-    out.extend_from_slice(&[0x1b, 0x64, 0x02]); // ESC d 2  — clear the tear bar
-    out.extend_from_slice(&[0x1d, 0x56, 0x42, 0x30]); // GS V 66 48 — feed 6mm, cut
+    // GS V 66 16 — feed 2mm past the last dot row, then partial cut (no ESC d line feeds).
+    out.extend_from_slice(&[0x1d, 0x56, 0x42, 0x10]);
     out
 }
 
@@ -306,10 +360,10 @@ mod tests {
         let height = 300;
         let luma = vec![0u8; 8 * height as usize];
         let bitmap = pack_luma(8, height, &luma, 8, BLACK_THRESHOLD);
-        let payload = escpos_payload(&bitmap);
+        let payload = escpos_payload(&bitmap, 8);
 
         assert!(payload.starts_with(&[0x1b, 0x40]));
-        assert!(payload.ends_with(&[0x1d, 0x56, 0x42, 0x30]));
+        assert!(payload.ends_with(&[0x1d, 0x56, 0x42, 0x10]));
 
         let bands = payload
             .windows(4)
@@ -319,7 +373,7 @@ mod tests {
 
         let cuts = payload
             .windows(4)
-            .filter(|w| *w == [0x1d, 0x56, 0x42, 0x30])
+            .filter(|w| *w == [0x1d, 0x56, 0x42, 0x10])
             .count();
         assert_eq!(cuts, 1, "exactly one cut per receipt");
     }
@@ -330,7 +384,7 @@ mod tests {
     fn payload_zeroes_left_margin_and_claims_full_print_width() {
         let luma = vec![0u8; 576 * 2];
         let bitmap = pack_luma(576, 2, &luma, 576, BLACK_THRESHOLD);
-        let payload = escpos_payload(&bitmap);
+        let payload = escpos_payload(&bitmap, 576);
 
         let margin_at = payload
             .windows(4)
@@ -354,7 +408,7 @@ mod tests {
     fn payload_sets_print_area_to_the_narrow_roll_width() {
         let luma = vec![0u8; 384];
         let bitmap = pack_luma(384, 1, &luma, 384, BLACK_THRESHOLD);
-        let payload = escpos_payload(&bitmap);
+        let payload = escpos_payload(&bitmap, 384);
         // 384 = 0x0180 -> nL 0x80, nH 0x01
         assert!(
             payload
@@ -368,7 +422,7 @@ mod tests {
     fn payload_band_header_carries_width_and_row_count() {
         let luma = vec![0u8; 576 * 2];
         let bitmap = pack_luma(576, 2, &luma, 576, BLACK_THRESHOLD);
-        let payload = escpos_payload(&bitmap);
+        let payload = escpos_payload(&bitmap, 576);
         let at = payload
             .windows(4)
             .position(|w| w == [0x1d, 0x76, 0x30, 0x00])

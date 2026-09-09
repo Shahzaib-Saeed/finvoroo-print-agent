@@ -63,7 +63,7 @@ const CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The render window lives off every monitor so nothing flashes on the till.
 const OFFSCREEN_ORIGIN: i32 = -30_000;
 /// Blank paper left after the last dot, so the cut does not clip a descender.
-const TRAILING_DOT_ROWS: u32 = 24;
+const TRAILING_DOT_ROWS: u32 = 4;
 
 pub fn init() -> Result<()> {
     if JOB_TX.get().is_some() {
@@ -210,8 +210,9 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32) -> Result<Vec<u8>> {
     }
 
     let bitmap = escpos_raster::trim_leading_blank_rows(bitmap);
+    let bitmap = escpos_raster::trim_leading_blank_columns(bitmap);
     let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, TRAILING_DOT_ROWS);
-    Ok(escpos_raster::escpos_payload(&bitmap))
+    Ok(escpos_raster::escpos_payload(&bitmap, width_dots))
 }
 
 unsafe fn resize_surface(handles: &EngineHandles, width: u32, height: u32) -> Result<()> {
@@ -368,11 +369,11 @@ fn silent_print(
         .cast()
         .context("WebView2 printer settings (ICoreWebView2PrintSettings2) are unavailable")?;
 
-    let width_in = (paper_mm as f64) / 25.4;
+    let (layout_mm, _) = escpos_raster::paper_geometry(paper_mm);
+    let width_in = (layout_mm as f64) / 25.4;
     // Chrome uses `@page { size: 80mm auto }`. WebView2 treats `auto` as ~0 and
     // then shrink-to-fits the receipt (looks like 0.001 font on 80mm). A 1" floor
     // does the same. Measure the real receipt; if that fails, use a tall roll.
-    let (layout_mm, _) = escpos_raster::paper_geometry(paper_mm);
     let content_px = measure_content_height_px(webview, layout_mm).unwrap_or(0.0);
     let content_px = if content_px < 80.0 {
         tracing::warn!(
@@ -384,8 +385,8 @@ fn silent_print(
     };
     // CSS @page already has 2–3mm. Extra WebView2 margins shrink the printable
     // area so the last rows spill onto page 2 and the cutter fires between pages.
-    let cutter_in = 12.0 / 25.4;
-    let page_height_in = ((content_px / 96.0) * 1.30 + cutter_in).min(80.0);
+    let cutter_in = 6.0 / 25.4;
+    let page_height_in = ((content_px / 96.0) * 1.04 + cutter_in).min(80.0);
     let page_height_mm = page_height_in * 25.4;
     tracing::info!(
         paper_mm,
@@ -441,7 +442,7 @@ fn silent_print(
 }
 
 fn wait_for_layout(webview: &ICoreWebView2) {
-    let deadline = Instant::now() + Duration::from_millis(280);
+    let deadline = Instant::now() + Duration::from_millis(350);
     loop {
         let ready = execute_script(
             webview,
@@ -465,7 +466,7 @@ fn wait_for_layout(webview: &ICoreWebView2) {
         }
         pump_for(Duration::from_millis(16));
     }
-    pump_for(Duration::from_millis(20));
+    pump_for(Duration::from_millis(8));
 }
 
 fn inject_page_size(webview: &ICoreWebView2, paper_mm: u32, height_mm: f64) -> Result<()> {
@@ -528,6 +529,13 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     el.style.setProperty('background','#fff','important');
     if (el.classList && el.classList.contains('thermal-receipt-body')) {{
       el.style.setProperty('padding-top','0','important');
+      el.style.setProperty('padding-bottom','0','important');
+      el.style.setProperty('padding-left','3px','important');
+      el.style.setProperty('padding-right','3px','important');
+    }}
+    if (el.classList && el.classList.contains('thermal-header')) {{
+      el.style.setProperty('margin','0','important');
+      el.style.setProperty('padding','0','important');
     }}
   }}
   // A scrollbar would narrow the layout and shift the capture, so suppress it.
@@ -546,13 +554,13 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     document.head.appendChild(noBars);
   }}
   void document.body.offsetHeight;
+  var body = document.querySelector('.thermal-receipt-body');
+  if (body) {{
+    var br = body.getBoundingClientRect();
+    return Math.ceil(Math.max(body.scrollHeight || 0, body.offsetHeight || 0, br.height || 0));
+  }}
   var origin = root.getBoundingClientRect();
   var h = Math.max(root.scrollHeight || 0, root.offsetHeight || 0, origin.height || 0);
-  var list = root.querySelectorAll('*');
-  for (var i = 0; i < list.length; i++) {{
-    var r = list[i].getBoundingClientRect();
-    h = Math.max(h, r.bottom - origin.top, list[i].scrollHeight || 0, list[i].offsetHeight || 0);
-  }}
   return Math.ceil(h);
 }})()"#
     );
