@@ -623,7 +623,7 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     if (el.classList && el.classList.contains('thermal-receipt-body')) {{
       el.style.setProperty('padding-top','0','important');
       el.style.setProperty('padding-bottom','0','important');
-      var pad = mm >= 72 ? '8mm' : '3mm';
+      var pad = mm >= 72 ? '3mm' : '2mm';
       el.style.setProperty('padding-left', pad, 'important');
       el.style.setProperty('padding-right', pad, 'important');
     }}

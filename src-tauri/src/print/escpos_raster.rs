@@ -141,7 +141,8 @@ pub fn trim_leading_blank_columns(bitmap: MonoBitmap) -> MonoBitmap {
 }
 
 /// Extra left margin some heads still apply to raster jobs after `GS L 0`.
-/// 8mm (64 dots) matches the 80mm CSS safe pad so the shift eats gutter, not ink.
+/// Keep this at or under the CSS gutter (3mm / 24 dots on 80mm) so a nudge
+/// never eats the table or TOTAL box.
 pub fn left_margin_nudge_dots(printer: &str, paper_mm: u32) -> u32 {
     let hay = printer.to_ascii_lowercase();
     let bixolon = hay.contains("bixolon")
@@ -156,9 +157,9 @@ pub fn left_margin_nudge_dots(printer: &str, paper_mm: u32) -> u32 {
         return 0;
     }
     if paper_mm <= 58 {
-        32
+        16
     } else {
-        64
+        24
     }
 }
 
@@ -210,8 +211,7 @@ pub fn pad_bitmap_to_head(bitmap: MonoBitmap, head_width_dots: u32) -> MonoBitma
 }
 
 /// Move content left by `dots`, filling the right with white. Used to cancel a
-/// printer leftover left margin. The 80mm CSS gutter is 64 dots, so a 64-dot
-/// nudge on Bixolon eats padding rather than clipping the table.
+/// printer leftover left margin. Must not exceed the CSS side gutter.
 pub fn shift_content_left(bitmap: MonoBitmap, dots: u32) -> MonoBitmap {
     if dots == 0 || bitmap.width <= dots {
         return bitmap;
@@ -424,12 +424,12 @@ mod tests {
     }
 
     #[test]
-    fn bixolon_gets_an_8mm_left_nudge_on_80mm() {
-        assert_eq!(left_margin_nudge_dots("Bixolon SRP-350plusIII", 80), 64);
-        assert_eq!(left_margin_nudge_dots("BC-95AC", 80), 64);
+    fn bixolon_gets_a_small_left_nudge_on_80mm() {
+        assert_eq!(left_margin_nudge_dots("Bixolon SRP-350plusIII", 80), 24);
+        assert_eq!(left_margin_nudge_dots("BC-95AC", 80), 24);
         assert_eq!(left_margin_nudge_dots("Black Copper POS-80", 80), 0);
         assert_eq!(left_margin_nudge_dots("Xprinter XP-N160II", 80), 0);
-        assert_eq!(left_margin_nudge_dots("Bixolon SRP-330", 58), 32);
+        assert_eq!(left_margin_nudge_dots("Bixolon SRP-330", 58), 16);
     }
 
     #[test]
