@@ -12,6 +12,10 @@ pub fn init_html_engine() -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn prewarm_html_engine(_paper_mm: u32) -> anyhow::Result<()> {
+    Ok(())
+}
+
 pub fn print_job(req: &PrintRequest) -> anyhow::Result<()> {
     let _ = JobKind::parse(&req.job_type)?;
     bail!(

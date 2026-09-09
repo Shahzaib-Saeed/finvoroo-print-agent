@@ -14,6 +14,8 @@ async function load() {
   $('status-label').textContent = 'Running';
   const version = status.version || '1.0.0';
   $('version').textContent = `v${version}`;
+  $('header-version').textContent = `v${version}`;
+  document.title = `Finvoroo Print Agent v${version}`;
   $('installed-version').textContent = status.installed_version
     ? `v${status.installed_version}`
     : `v${version}`;

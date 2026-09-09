@@ -75,6 +75,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/health", get(status))
         .route("/printers", get(printers))
         .route("/print", post(print_handler))
+        .route("/warm", post(warm_handler))
         .route("/pair", post(pair_handler))
         .route("/settings", get(settings))
         .layer(RequestBodyLimitLayer::new(MAX_BODY))
@@ -236,6 +237,37 @@ async fn print_handler(
             log_print_error(&state, &err.to_string());
             error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct WarmRequest {
+    #[serde(default)]
+    paper_mm: Option<u32>,
+}
+
+async fn warm_handler(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<WarmRequest>,
+) -> Response {
+    if let Err(resp) = require_auth(&state, &headers).await {
+        return resp;
+    }
+
+    let paper_mm = req.paper_mm.unwrap_or(80);
+    if paper_mm != 58 && paper_mm != 80 {
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "paper_mm must be 58 or 80",
+        );
+    }
+
+    match tokio::task::spawn_blocking(move || print::prewarm_html_engine(paper_mm)).await {
+        Ok(Ok(())) => Json(serde_json::json!({ "ok": true, "warmed": true, "paper_mm": paper_mm }))
+            .into_response(),
+        Ok(Err(err)) => error_response(StatusCode::UNPROCESSABLE_ENTITY, err.to_string()),
+        Err(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
 }
 

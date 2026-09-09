@@ -8,7 +8,7 @@ mod backend;
 #[path = "stub.rs"]
 mod backend;
 
-pub use backend::{init_html_engine, list_printers, print_job, test_print};
+pub use backend::{init_html_engine, list_printers, prewarm_html_engine, print_job, test_print};
 
 use serde::{Deserialize, Serialize};
 

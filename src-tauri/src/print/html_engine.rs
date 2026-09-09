@@ -47,6 +47,14 @@ struct HtmlPrintJob {
     reply: mpsc::Sender<Result<HtmlOutcome>>,
 }
 
+enum EngineJob {
+    Print(HtmlPrintJob),
+    Warm {
+        paper_mm: u32,
+        reply: mpsc::Sender<Result<()>>,
+    },
+}
+
 struct EngineHandles {
     hwnd: HWND,
     env: ICoreWebView2Environment,
@@ -54,7 +62,7 @@ struct EngineHandles {
     webview: ICoreWebView2,
 }
 
-static JOB_TX: OnceCell<mpsc::Sender<HtmlPrintJob>> = OnceCell::new();
+static JOB_TX: OnceCell<mpsc::Sender<EngineJob>> = OnceCell::new();
 
 const NAV_TIMEOUT: Duration = Duration::from_secs(30);
 const PRINT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -70,7 +78,7 @@ pub fn init() -> Result<()> {
         return Ok(());
     }
 
-    let (tx, rx) = mpsc::channel::<HtmlPrintJob>();
+    let (tx, rx) = mpsc::channel::<EngineJob>();
     thread::Builder::new()
         .name("finvoroo-html-print".into())
         .spawn(move || {
@@ -92,12 +100,12 @@ pub fn print_html(printer: &str, html: &str, paper_mm: u32) -> Result<HtmlOutcom
         .get()
         .ok_or_else(|| anyhow::anyhow!("html print engine is not initialized"))?;
     let (reply_tx, reply_rx) = mpsc::channel();
-    tx.send(HtmlPrintJob {
+    tx.send(EngineJob::Print(HtmlPrintJob {
         printer: printer.to_string(),
         html: html.to_string(),
         paper_mm,
         reply: reply_tx,
-    })
+    }))
     .map_err(|_| anyhow::anyhow!("html print engine is not running"))?;
 
     reply_rx
@@ -105,7 +113,23 @@ pub fn print_html(printer: &str, html: &str, paper_mm: u32) -> Result<HtmlOutcom
         .map_err(|_| anyhow::anyhow!("html print engine is not running"))?
 }
 
-fn engine_thread_main(rx: mpsc::Receiver<HtmlPrintJob>) -> Result<()> {
+/// Run one raster capture cycle so the first real receipt after POS open is not cold.
+pub fn prewarm_raster(paper_mm: u32) -> Result<()> {
+    let tx = JOB_TX
+        .get()
+        .ok_or_else(|| anyhow::anyhow!("html print engine is not initialized"))?;
+    let (reply_tx, reply_rx) = mpsc::channel();
+    tx.send(EngineJob::Warm {
+        paper_mm,
+        reply: reply_tx,
+    })
+    .map_err(|_| anyhow::anyhow!("html print engine is not running"))?;
+    reply_rx
+        .recv()
+        .map_err(|_| anyhow::anyhow!("html print engine is not running"))?
+}
+
+fn engine_thread_main(rx: mpsc::Receiver<EngineJob>) -> Result<()> {
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
     }
@@ -126,20 +150,58 @@ fn engine_thread_main(rx: mpsc::Receiver<HtmlPrintJob>) -> Result<()> {
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     }
 
-    if let Err(err) = warm_up(&handles.webview) {
+    if let Err(err) = warm_up(&handles) {
         tracing::warn!("html print engine warm-up skipped: {err:#}");
     }
 
     for job in rx {
-        let result = render_and_print(&handles, &job.printer, &job.html, job.paper_mm);
-        let _ = job.reply.send(result);
+        match job {
+            EngineJob::Print(job) => {
+                let result = render_and_print(&handles, &job.printer, &job.html, job.paper_mm);
+                let _ = job.reply.send(result);
+            }
+            EngineJob::Warm { paper_mm, reply } => {
+                let result = run_prewarm(&handles, paper_mm);
+                let _ = reply.send(result);
+            }
+        }
     }
 
     Ok(())
 }
 
-fn warm_up(webview: &ICoreWebView2) -> Result<()> {
-    wait_navigation(webview, "<!DOCTYPE html><html><body></body></html>")
+fn warm_up(handles: &EngineHandles) -> Result<()> {
+    load_receipt_html(
+        &handles.webview,
+        "<!DOCTYPE html><html><body></body></html>",
+    )?;
+    run_prewarm(handles, 80)
+}
+
+fn run_prewarm(handles: &EngineHandles, paper_mm: u32) -> Result<()> {
+    let (layout_mm, _) = escpos_raster::paper_geometry(paper_mm);
+    let html = prewarm_html(layout_mm);
+    load_receipt_html(&handles.webview, &html)?;
+    wait_for_layout(&handles.webview, true);
+    match render_raster(handles, paper_mm) {
+        Ok(_) => {
+            tracing::info!(paper_mm, "html print engine prewarmed");
+            Ok(())
+        }
+        Err(err) => {
+            tracing::warn!("html print engine prewarm raster skipped: {err:#}");
+            Ok(())
+        }
+    }
+}
+
+fn prewarm_html(layout_mm: u32) -> String {
+    format!(
+        r#"<!DOCTYPE html><html class="print-thermal-receipt-only print-thermal-receipt-80"><head><meta charset="utf-8"><style>
+html,body{{margin:0;padding:0;width:{layout_mm}mm;max-width:{layout_mm}mm;background:#fff;color:#000;font:10px monospace}}
+.thermal-receipt-body{{width:{layout_mm}mm;padding:0;margin:0}}
+</style></head><body><div id="pos-receipt-print"><div class="thermal-receipt-body thermal-receipt-body--80"><div>PREWARM</div></div></div></body></html>"#
+    )
 }
 
 fn render_and_print(
@@ -152,8 +214,8 @@ fn render_and_print(
         return Ok(HtmlOutcome::Printed);
     }
 
-    wait_navigation(&handles.webview, html)?;
-    wait_for_layout(&handles.webview);
+    load_receipt_html(&handles.webview, html)?;
+    wait_for_layout(&handles.webview, !html_has_remote_images(html));
 
     match render_raster(handles, paper_mm) {
         Ok(payload) => return Ok(HtmlOutcome::Raster(payload)),
@@ -237,7 +299,31 @@ unsafe fn resize_surface(handles: &EngineHandles, width: u32, height: u32) -> Re
         })
         .context("SetBounds for capture surface")?;
     handles.controller.SetIsVisible(true)?;
-    pump_for(Duration::from_millis(40));
+    pump_for(Duration::from_millis(12));
+    Ok(())
+}
+
+fn html_has_remote_images(html: &str) -> bool {
+    html.contains("src=\"http")
+        || html.contains("src='http")
+        || html.contains("src=\"//")
+        || html.contains("src='//")
+}
+
+/// Faster than NavigateToString — no NavigationCompleted round trip per receipt.
+fn load_receipt_html(webview: &ICoreWebView2, html: &str) -> Result<()> {
+    let html_json = serde_json::to_string(html).context("serialize receipt html")?;
+    let js = format!(
+        r#"(function(){{
+  var html = {html_json};
+  document.open('text/html', 'replace');
+  document.write(html);
+  document.close();
+  return 1;
+}})()"#
+    );
+    execute_script(webview, &js)?;
+    pump_for(Duration::from_millis(8));
     Ok(())
 }
 
@@ -441,8 +527,9 @@ fn silent_print(
     wait_with_pump_timeout(rx, PRINT_TIMEOUT)?
 }
 
-fn wait_for_layout(webview: &ICoreWebView2) {
-    let deadline = Instant::now() + Duration::from_millis(350);
+fn wait_for_layout(webview: &ICoreWebView2, fast: bool) {
+    let deadline =
+        Instant::now() + Duration::from_millis(if fast { 80 } else { 350 });
     loop {
         let ready = execute_script(
             webview,

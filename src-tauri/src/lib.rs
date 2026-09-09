@@ -198,8 +198,13 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "Quit Finvoroo Print Agent", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &test, &quit])?;
 
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_title(&format!("Finvoroo Print Agent v{VERSION}"));
+            }
+
             let mut tray = TrayIconBuilder::new()
                 .menu(&menu)
+                .tooltip(format!("Finvoroo Print Agent v{VERSION}"))
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_settings(app),

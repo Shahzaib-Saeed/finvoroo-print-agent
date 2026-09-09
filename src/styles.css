@@ -26,15 +26,33 @@ header {
   align-items: center;
   margin-bottom: 18px;
 }
-.mark {
-  width: 40px;
-  height: 40px;
+.brand-logo {
+  width: 44px;
+  height: 44px;
   border-radius: 10px;
-  background: #0f2744;
-  color: white;
-  display: grid;
-  place-items: center;
-  font-weight: 800;
+  object-fit: contain;
+  flex-shrink: 0;
+  box-shadow: 0 1px 0 rgba(15, 39, 68, 0.08);
+}
+.brand-copy { min-width: 0; }
+.brand-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.brand-version {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #e0f2fe;
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
 }
 h1 { font-size: 18px; margin: 0; }
 h2 { font-size: 14px; margin: 0 0 8px; }

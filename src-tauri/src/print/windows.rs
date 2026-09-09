@@ -39,6 +39,10 @@ pub fn init_html_engine() -> Result<()> {
     html_engine::init()
 }
 
+pub fn prewarm_html_engine(paper_mm: u32) -> Result<()> {
+    html_engine::prewarm_raster(paper_mm)
+}
+
 fn open_cash_drawer(printer: &str) -> Result<()> {
     print_raw(printer, ESCPOS_OPEN_DRAWER)
 }
