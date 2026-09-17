@@ -229,12 +229,13 @@ fn render_and_print(
 /// Render the receipt at the printer's dot pitch and turn it into an ESC/POS bit
 /// image. This is the path that avoids driver page sizes entirely.
 fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Result<Vec<u8>> {
-    let (layout_mm, width_dots) = escpos_raster::paper_geometry_for_printer(paper_mm, printer);
+    // Layout always uses the classic printable band (72mm/576 on 80mm) so type
+    // size matches Bixolon. Wide left-align heads then centre that band in a
+    // 640-dot payload — equal gutters left/right on Black Copper paper.
+    let (layout_mm, width_dots) = escpos_raster::paper_geometry(paper_mm);
     let scale = escpos_raster::rasterization_scale(layout_mm, width_dots);
     let wide_head = paper_mm > 58 && !escpos_raster::is_narrow_band_80mm_head(printer);
-    // Wide heads left-align the payload: send a full-width (640) bitmap so the
-    // receipt fills the roll the way Bixolon fills its 576-dot band.
-    let payload_width = width_dots;
+    let payload_width = escpos_raster::payload_width_dots(paper_mm, printer);
     let trailing_rows = if wide_head {
         escpos_raster::TRAILING_BLANK_ROWS_WIDE_HEAD
     } else {
@@ -289,13 +290,14 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Resul
     }
 
     let bitmap = escpos_raster::trim_leading_blank_rows(bitmap);
-    // Keep a tiny existing margin if the capture had one, then always append
-    // enough white so branding is not flush with the cut (esp. Black Copper).
     let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, 4);
     let bitmap = escpos_raster::append_blank_rows(bitmap, trailing_rows);
-    // Full-width capture already matches the head — left-align pad is a no-op
-    // when widths match; still run it so a slightly narrow capture fills left.
-    let bitmap = escpos_raster::pad_bitmap_to_head(bitmap, payload_width);
+    let bitmap = if wide_head {
+        // Crop ink, then centre in 640 so left-aligning heads look balanced.
+        escpos_raster::center_content_on_head(bitmap, payload_width)
+    } else {
+        escpos_raster::pad_bitmap_to_head(bitmap, width_dots)
+    };
     let nudge = escpos_raster::left_margin_nudge_dots(printer, paper_mm);
     let bitmap = escpos_raster::shift_content_left(bitmap, nudge);
     if nudge > 0 {

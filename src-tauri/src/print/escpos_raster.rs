@@ -77,18 +77,22 @@ pub fn is_wide_80mm_left_align_head(printer: &str) -> bool {
 
 /// Geometry for the named printer.
 ///
-/// Universal rule for 80mm: full head (80mm / 640 dots) so content fills the
-/// roll on Black Copper, Xprinter, and unknown brands. Only known narrow-band
-/// printers (Bixolon etc.) keep the classic 72mm / 576 layout.
-pub fn paper_geometry_for_printer(paper_mm: u32, printer: &str) -> (u32, u32) {
-    if paper_mm <= 58 {
-        return paper_geometry(paper_mm);
+/// Layout is always the classic printable band (72mm / 576 on 80mm paper) so
+/// type size matches Bixolon. Wide left-align heads then get that band *centred*
+/// inside a 640-dot payload in [`crate::print::html_engine`] — filling to 640
+/// left-aligned still left a large empty strip on Black Copper paper.
+pub fn paper_geometry_for_printer(paper_mm: u32, _printer: &str) -> (u32, u32) {
+    paper_geometry(paper_mm)
+}
+
+/// ESC/POS payload width for the printer. Wide left-align heads need a full
+/// 80mm (640-dot) canvas so we can centre the 576-dot layout on the roll.
+pub fn payload_width_dots(paper_mm: u32, printer: &str) -> u32 {
+    let (_, width_dots) = paper_geometry(paper_mm);
+    if paper_mm > 58 && !is_narrow_band_80mm_head(printer) {
+        return 640;
     }
-    if is_narrow_band_80mm_head(printer) {
-        return paper_geometry(paper_mm); // 72, 576
-    }
-    // Full 80mm @ 8 dots/mm = 640.
-    (80, 640)
+    width_dots
 }
 
 /// Device scale that makes the laid-out width land on exactly `width_dots`, so one
@@ -270,6 +274,63 @@ pub fn pad_bitmap_to_head(bitmap: MonoBitmap, head_width_dots: u32) -> MonoBitma
         height: bitmap.height,
         bits: new_bits,
     }
+}
+
+/// Drop blank columns on the right (mirror of [`trim_leading_blank_columns`]).
+pub fn trim_trailing_blank_columns(bitmap: MonoBitmap) -> MonoBitmap {
+    let stride = bitmap.stride();
+    if stride == 0 || bitmap.width == 0 {
+        return bitmap;
+    }
+
+    let mut last_col: Option<u32> = None;
+    'search: for x in (0..bitmap.width).rev() {
+        for y in 0..bitmap.height {
+            let byte_idx = y as usize * stride + (x / 8) as usize;
+            let mask = 0x80u8 >> (x % 8);
+            if bitmap.bits.get(byte_idx).map(|b| b & mask != 0).unwrap_or(false) {
+                last_col = Some(x);
+                break 'search;
+            }
+        }
+    }
+
+    let Some(last) = last_col else {
+        return bitmap;
+    };
+    if last + 1 >= bitmap.width {
+        return bitmap;
+    }
+
+    let new_width = last + 1;
+    let new_stride = ((new_width + 7) / 8) as usize;
+    let mut new_bits = vec![0u8; new_stride * bitmap.height as usize];
+
+    for y in 0..bitmap.height {
+        for x in 0..new_width {
+            let src_byte = y as usize * stride + (x / 8) as usize;
+            let src_mask = 0x80u8 >> (x % 8);
+            if bitmap.bits[src_byte] & src_mask == 0 {
+                continue;
+            }
+            let dst_byte = y as usize * new_stride + (x / 8) as usize;
+            let dst_mask = 0x80u8 >> (x % 8);
+            new_bits[dst_byte] |= dst_mask;
+        }
+    }
+
+    MonoBitmap {
+        width: new_width,
+        height: bitmap.height,
+        bits: new_bits,
+    }
+}
+
+/// Crop to inked columns then centre on `head_width_dots` so left-aligning
+/// heads (Black Copper, Xprinter, …) print with equal gutters like Bixolon.
+pub fn center_content_on_head(bitmap: MonoBitmap, head_width_dots: u32) -> MonoBitmap {
+    let cropped = trim_trailing_blank_columns(trim_leading_blank_columns(bitmap));
+    pad_bitmap_to_head_centered(cropped, head_width_dots)
 }
 
 /// Like [`pad_bitmap_to_head`], but centres a narrower capture in the head width
@@ -507,37 +568,58 @@ mod tests {
     }
 
     #[test]
-    fn black_copper_and_unknown_80mm_use_full_head_width() {
+    fn layout_stays_classic_band_payload_widens_for_left_align_heads() {
+        // Layout is always the printable band so type size matches Bixolon.
         assert_eq!(
             paper_geometry_for_printer(80, "Black Copper POS-80"),
-            (80, 640)
-        );
-        assert_eq!(
-            paper_geometry_for_printer(80, "BlackCopper BC-96AC"),
-            (80, 640)
-        );
-        assert_eq!(
-            paper_geometry_for_printer(80, "Black Copper BC-86AC"),
-            (80, 640)
-        );
-        assert_eq!(paper_geometry_for_printer(80, "BC96AC"), (80, 640));
-        // Unknown / generic POS printers also get full width (universal default).
-        assert_eq!(paper_geometry_for_printer(80, "POS-80"), (80, 640));
-        assert_eq!(paper_geometry_for_printer(80, "Xprinter XP-N160II"), (80, 640));
-        assert_eq!(paper_geometry_for_printer(80, "Rongta RP80"), (80, 640));
-        // Bixolon / Epson keep the classic 72mm band.
-        assert_eq!(
-            paper_geometry_for_printer(80, "Bixolon SRP-350plusIII"),
             (72, 576)
         );
         assert_eq!(
-            paper_geometry_for_printer(80, "Epson TM-T88VI"),
+            paper_geometry_for_printer(80, "BlackCopper BC-96AC"),
+            (72, 576)
+        );
+        assert_eq!(
+            paper_geometry_for_printer(80, "Xprinter XP-N160II"),
+            (72, 576)
+        );
+        assert_eq!(
+            paper_geometry_for_printer(80, "Bixolon SRP-350plusIII"),
             (72, 576)
         );
         assert_eq!(
             paper_geometry_for_printer(58, "Black Copper POS-80"),
             (48, 384)
         );
+        // Wide left-align heads get a 640-dot payload so we can centre the band.
+        assert_eq!(payload_width_dots(80, "Black Copper POS-80"), 640);
+        assert_eq!(payload_width_dots(80, "BlackCopper BC-96AC"), 640);
+        assert_eq!(payload_width_dots(80, "BC96AC"), 640);
+        assert_eq!(payload_width_dots(80, "POS-80"), 640);
+        assert_eq!(payload_width_dots(80, "Xprinter XP-N160II"), 640);
+        assert_eq!(payload_width_dots(80, "Rongta RP80"), 640);
+        assert_eq!(payload_width_dots(80, "Bixolon SRP-350plusIII"), 576);
+        assert_eq!(payload_width_dots(80, "Epson TM-T88VI"), 576);
+        assert_eq!(payload_width_dots(58, "Black Copper POS-80"), 384);
+    }
+
+    #[test]
+    fn center_content_on_head_balances_gutters_on_640() {
+        // 8 black dots in a 16-wide canvas with 4 white on each side → crop to
+        // ink then centre in 32 → equal 12-dot gutters.
+        let mut luma = vec![255u8; 16];
+        for i in 4..12 {
+            luma[i] = 0;
+        }
+        let bitmap = pack_luma(16, 1, &luma, 16, BLACK_THRESHOLD);
+        let centered = center_content_on_head(bitmap, 32);
+        assert_eq!(centered.width, 32);
+        // Columns 12..20 should be black (8 dots centred in 32).
+        for x in 0..32u32 {
+            let byte = (x / 8) as usize;
+            let mask = 0x80u8 >> (x % 8);
+            let ink = centered.bits[byte] & mask != 0;
+            assert_eq!(ink, (12..20).contains(&x), "col {x}");
+        }
     }
 
     #[test]
