@@ -1,14 +1,30 @@
 pub mod escpos_raster;
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 #[path = "windows.rs"]
 mod backend;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+#[path = "macos.rs"]
+mod backend;
+
+/// Everything else (Linux, BSD): the HTTP API and settings still run, printing
+/// reports that it is unavailable rather than failing to build.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 #[path = "stub.rs"]
 mod backend;
 
 pub use backend::{init_html_engine, list_printers, prewarm_html_engine, print_job, test_print};
+
+/// Whether this build can render an HTML receipt.
+///
+/// Only the Windows backend has the WebView2 engine; it rasterises the HTML and
+/// sends the dots as ESC/POS. Elsewhere there is nothing to render with, so the
+/// client must send a receipt that is already ESC/POS. Advertised over the HTTP
+/// API so callers branch on what the connected agent can actually do rather
+/// than guessing from the browser's own platform — the agent often runs on a
+/// different machine than the browser.
+pub const SUPPORTS_HTML: bool = cfg!(target_os = "windows");
 
 use serde::{Deserialize, Serialize};
 

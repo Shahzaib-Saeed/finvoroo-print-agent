@@ -231,8 +231,12 @@ fn render_and_print(
 /// Render the receipt at the printer's dot pitch and turn it into an ESC/POS bit
 /// image. This is the path that avoids driver page sizes entirely.
 fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Result<Vec<u8>> {
-    let (layout_mm, width_dots) = escpos_raster::paper_geometry(paper_mm);
+    let (layout_mm, width_dots) = escpos_raster::paper_geometry_for_printer(paper_mm, printer);
     let scale = escpos_raster::rasterization_scale(layout_mm, width_dots);
+    let wide_head = paper_mm > 58 && escpos_raster::is_wide_80mm_left_align_head(printer);
+    // Physical head on these units is closer to full 80mm (640 dots). Render a
+    // slightly wider band, then centre it so leftover paper is not all on the right.
+    let payload_width = if wide_head { 640 } else { width_dots };
 
     let controller3: ICoreWebView2Controller3 = handles
         .controller
@@ -260,8 +264,10 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Resul
         paper_mm,
         layout_mm,
         width_dots,
+        payload_width,
         height_css,
         height_dots,
+        printer,
         "rasterising receipt"
     );
 
@@ -273,13 +279,17 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Resul
 
     let bitmap = escpos_raster::trim_leading_blank_rows(bitmap);
     let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, TRAILING_DOT_ROWS);
-    let bitmap = escpos_raster::pad_bitmap_to_head(bitmap, width_dots);
+    let bitmap = if wide_head {
+        escpos_raster::pad_bitmap_to_head_centered(bitmap, payload_width)
+    } else {
+        escpos_raster::pad_bitmap_to_head(bitmap, width_dots)
+    };
     let nudge = escpos_raster::left_margin_nudge_dots(printer, paper_mm);
     let bitmap = escpos_raster::shift_content_left(bitmap, nudge);
     if nudge > 0 {
         tracing::info!(printer, nudge, "applied printer left-margin nudge");
     }
-    Ok(escpos_raster::escpos_payload(&bitmap, width_dots))
+    Ok(escpos_raster::escpos_payload(&bitmap, payload_width))
 }
 
 unsafe fn resize_surface(handles: &EngineHandles, width: u32, height: u32) -> Result<()> {
@@ -623,7 +633,7 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     if (el.classList && el.classList.contains('thermal-receipt-body')) {{
       el.style.setProperty('padding-top','0','important');
       el.style.setProperty('padding-bottom','0','important');
-      var pad = mm >= 72 ? '3mm' : '2mm';
+      var pad = mm >= 76 ? '2mm' : (mm >= 72 ? '3mm' : '2mm');
       el.style.setProperty('padding-left', pad, 'important');
       el.style.setProperty('padding-right', pad, 'important');
     }}

@@ -102,6 +102,7 @@ async fn status(State(state): State<HttpState>) -> impl IntoResponse {
         "auth_required": true,
         "pairing_required": true,
         "pairing_available": true,
+        "capabilities": { "html": print::SUPPORTS_HTML },
     }))
 }
 
@@ -113,6 +114,9 @@ async fn printers(State(state): State<HttpState>, headers: HeaderMap) -> Respons
         Ok(Ok(printers)) => Json(serde_json::json!({
             "ok": true,
             "printers": printers,
+            // Additive: older clients ignore it, new ones use it to pick
+            // between the HTML/WebView2 path and a pre-rendered ESC/POS one.
+            "capabilities": { "html": print::SUPPORTS_HTML },
         }))
         .into_response(),
         Ok(Err(err)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
@@ -489,11 +493,15 @@ mod tests {
     /// Measures the real localhost round trip for `/print` over an actual TCP
     /// socket (not `oneshot`, which skips the network stack) — auth check,
     /// JSON decode, the in-flight dedupe lock, and the `spawn_blocking` dispatch
-    /// into `print::print_job`. On this (non-Windows) build the Win32 spooler
-    /// call itself is stubbed out and returns immediately with an error, so this
-    /// isolates exactly the local HTTP-layer cost the React client pays before
-    /// physical printing starts. Confirms there is no hidden multi-second
-    /// round trip anywhere in the agent's own request handling.
+    /// into `print::print_job`. Confirms there is no hidden multi-second round
+    /// trip anywhere in the agent's own request handling.
+    ///
+    /// The budget is platform-aware because the dispatch does different work:
+    /// on Windows/Linux the spooler call returns immediately (stub, or a bad
+    /// printer handle), so the measurement is pure HTTP-layer cost. On macOS
+    /// the CUPS backend really spawns `lp`, and a process spawn is tens of
+    /// milliseconds on its own — that cost is the macOS print path, not agent
+    /// overhead, so it gets its own ceiling rather than relaxing everyone's.
     #[tokio::test]
     async fn print_localhost_roundtrip_latency() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -539,9 +547,15 @@ mod tests {
             "print-agent /print localhost round trip over {} real requests: avg={avg:?} max={max:?}",
             durations.len()
         );
+        // macOS pays for a real `lp` spawn here; every other target does not.
+        let budget = if cfg!(target_os = "macos") {
+            std::time::Duration::from_millis(600)
+        } else {
+            std::time::Duration::from_millis(200)
+        };
         assert!(
-            max < std::time::Duration::from_millis(200),
-            "local /print HTTP round trip too slow: {max:?} (target: milliseconds, not seconds)"
+            max < budget,
+            "local /print HTTP round trip too slow: {max:?} (budget {budget:?}; target: milliseconds, not seconds)"
         );
     }
 }

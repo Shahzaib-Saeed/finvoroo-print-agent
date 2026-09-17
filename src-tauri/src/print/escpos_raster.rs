@@ -33,6 +33,33 @@ pub fn paper_geometry(paper_mm: u32) -> (u32, u32) {
     }
 }
 
+/// Black Copper (and similar) 80mm heads left-align a 576-dot raster and leave a
+/// large empty strip on the right of the roll. Bixolon fills its printable band,
+/// so the same job looks full-width there and cramped-left on Black Copper.
+/// Use a wider layout for those printers so content matches the Bixolon look.
+pub fn is_wide_80mm_left_align_head(printer: &str) -> bool {
+    let hay = printer.to_ascii_lowercase();
+    hay.contains("black copper")
+        || hay.contains("blackcopper")
+        || hay.contains("bc-96")
+        || hay.contains("bc96")
+        || hay.contains("bc-98")
+        || hay.contains("bc98")
+        || hay.contains("bc-85")
+        || hay.contains("bc85")
+}
+
+/// Geometry for the named printer. Falls back to [`paper_geometry`] when the
+/// printer does not need a wider 80mm band.
+pub fn paper_geometry_for_printer(paper_mm: u32, printer: &str) -> (u32, u32) {
+    if paper_mm > 58 && is_wide_80mm_left_align_head(printer) {
+        // 76mm @ 8 dots/mm = 608. Leaves a small gutter on a true 80mm head
+        // without clipping printers that top out near 640 dots.
+        return (76, 608);
+    }
+    paper_geometry(paper_mm)
+}
+
 /// Device scale that makes the laid-out width land on exactly `width_dots`, so one
 /// rendered pixel becomes one dot. CSS pixels are 96 dpi.
 pub fn rasterization_scale(layout_mm: u32, width_dots: u32) -> f64 {
@@ -210,6 +237,41 @@ pub fn pad_bitmap_to_head(bitmap: MonoBitmap, head_width_dots: u32) -> MonoBitma
     }
 }
 
+/// Like [`pad_bitmap_to_head`], but centres a narrower capture in the head width
+/// so leftover paper is split left/right (Black Copper left-aligns otherwise).
+pub fn pad_bitmap_to_head_centered(bitmap: MonoBitmap, head_width_dots: u32) -> MonoBitmap {
+    if bitmap.width == 0 || bitmap.height == 0 || head_width_dots == 0 {
+        return bitmap;
+    }
+    if bitmap.width >= head_width_dots {
+        return pad_bitmap_to_head(bitmap, head_width_dots);
+    }
+
+    let inset = (head_width_dots - bitmap.width) / 2;
+    let old_stride = bitmap.stride();
+    let new_stride = ((head_width_dots + 7) / 8) as usize;
+    let mut new_bits = vec![0u8; new_stride * bitmap.height as usize];
+
+    for y in 0..bitmap.height {
+        for x in 0..bitmap.width {
+            let src_byte = y as usize * old_stride + (x / 8) as usize;
+            let src_mask = 0x80u8 >> (x % 8);
+            if bitmap.bits.get(src_byte).map(|b| b & src_mask != 0).unwrap_or(false) {
+                let dx = x + inset;
+                let dst_byte = y as usize * new_stride + (dx / 8) as usize;
+                let dst_mask = 0x80u8 >> (dx % 8);
+                new_bits[dst_byte] |= dst_mask;
+            }
+        }
+    }
+
+    MonoBitmap {
+        width: head_width_dots,
+        height: bitmap.height,
+        bits: new_bits,
+    }
+}
+
 /// Move content left by `dots`, filling the right with white. Used to cancel a
 /// printer leftover left margin. Must not exceed the CSS side gutter.
 pub fn shift_content_left(bitmap: MonoBitmap, dots: u32) -> MonoBitmap {
@@ -374,6 +436,35 @@ mod tests {
         assert_eq!(paper_geometry(80), (72, 576));
     }
 
+    #[test]
+    fn black_copper_80mm_uses_wider_printable_band() {
+        assert_eq!(
+            paper_geometry_for_printer(80, "Black Copper POS-80"),
+            (76, 608)
+        );
+        assert_eq!(
+            paper_geometry_for_printer(80, "BlackCopper BC-96AC"),
+            (76, 608)
+        );
+        // Bixolon stays on the standard 72mm band.
+        assert_eq!(
+            paper_geometry_for_printer(80, "Bixolon SRP-350plusIII"),
+            (72, 576)
+        );
+        assert_eq!(
+            paper_geometry_for_printer(58, "Black Copper POS-80"),
+            (48, 384)
+        );
+    }
+
+    #[test]
+    fn wide_head_detector_matches_black_copper_names() {
+        assert!(is_wide_80mm_left_align_head("Black Copper POS-80"));
+        assert!(is_wide_80mm_left_align_head("BC-96AC"));
+        assert!(!is_wide_80mm_left_align_head("Bixolon SRP-350plusIII"));
+        assert!(!is_wide_80mm_left_align_head("Xprinter XP-N160II"));
+    }
+
     /// 8 dots/mm at 203 dpi: the layout width must be exactly the width the head
     /// can cover, or the receipt prints squeezed or clipped.
     #[test]
@@ -500,6 +591,19 @@ mod tests {
         assert_eq!(padded.width, 16);
         assert_eq!(padded.stride(), 2);
         assert_eq!(padded.bits.len(), 4);
+    }
+
+    #[test]
+    fn pad_bitmap_to_head_centered_splits_leftover() {
+        let luma = vec![0u8; 8];
+        let bitmap = pack_luma(8, 1, &luma, 8, BLACK_THRESHOLD);
+        let padded = pad_bitmap_to_head_centered(bitmap, 16);
+        assert_eq!(padded.width, 16);
+        // 4-dot inset → first 4 dots white, then 8 black, then 4 white.
+        assert_eq!(padded.bits[0] & 0b1111_0000, 0);
+        assert_eq!(padded.bits[0] & 0b0000_1111, 0b0000_1111);
+        assert_eq!(padded.bits[1] & 0b1111_0000, 0b1111_0000);
+        assert_eq!(padded.bits[1] & 0b0000_1111, 0);
     }
 
     #[test]
