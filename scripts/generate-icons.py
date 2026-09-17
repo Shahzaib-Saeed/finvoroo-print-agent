@@ -1,59 +1,102 @@
-"""Generate PNG and ICO icons for the Finvoroo Print Agent."""
+"""Generate PNG and ICO icons for the Finvoroo Print Agent from the pharmacy logo."""
 from __future__ import annotations
 
 import struct
 import zlib
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1] / "src-tauri" / "icons"
+from PIL import Image
+
+AGENT_ROOT = Path(__file__).resolve().parents[1]
+ICONS = AGENT_ROOT / "src-tauri" / "icons"
+SRC_LOGO = AGENT_ROOT / "src" / "finvoroo-logo.png"
+# Canonical Finvoroo pharmacy mark used across the ERP UI.
+PHARMACY_LOGO = (
+    AGENT_ROOT.parent
+    / "React-frontend"
+    / "public"
+    / "media"
+    / "app"
+    / "pharmacy"
+    / "logo.png"
+)
 
 
-def png_bytes(size: int) -> bytes:
-    def pixel(x: int, y: int) -> bytes:
-        margin = max(2, size // 16)
-        if x < margin or y < margin or x >= size - margin or y >= size - margin:
-            r, g, b = 15, 39, 68
-        else:
-            bar = max(2, size // 10)
-            cx, cy = size // 2, size // 2
-            if abs(x - cx) < bar or (cy - bar * 2 < y < cy + bar and abs(x - cx) < size // 3):
-                r, g, b = 2, 132, 199
-            else:
-                r, g, b = 15, 39, 68
-        return bytes((r, g, b, 255))
-
-    raw = b"".join(b"\x00" + b"".join(pixel(x, y) for x in range(size)) for y in range(size))
-
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
-        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
-
-    ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", ihdr)
-        + chunk(b"IDAT", zlib.compress(raw, 9))
-        + chunk(b"IEND", b"")
-    )
+def load_source() -> Image.Image:
+    src = PHARMACY_LOGO if PHARMACY_LOGO.is_file() else SRC_LOGO
+    if not src.is_file():
+        raise SystemExit(f"Logo not found: tried {PHARMACY_LOGO} and {SRC_LOGO}")
+    img = Image.open(src).convert("RGBA")
+    print(f"Source logo: {src} ({img.size[0]}x{img.size[1]})")
+    return img
 
 
-def ico_from_png(png: bytes, size: int) -> bytes:
-    header = struct.pack("<HHH", 0, 1, 1)
-    dim = 0 if size >= 256 else size
-    entry = struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32, len(png), 6 + 16)
-    return header + entry + png
+def make_square_icon(src: Image.Image, size: int, *, pad_ratio: float = 0.12) -> Image.Image:
+    """Letterbox the logo onto a square canvas (transparent), with a small inset."""
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    inset = max(1, int(size * pad_ratio))
+    box = size - inset * 2
+    fitted = src.copy()
+    fitted.thumbnail((box, box), Image.Resampling.LANCZOS)
+    x = (size - fitted.width) // 2
+    y = (size - fitted.height) // 2
+    canvas.paste(fitted, (x, y), fitted)
+    return canvas
+
+
+def png_bytes(img: Image.Image) -> bytes:
+    from io import BytesIO
+
+    buf = BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def ico_from_pngs(entries: list[tuple[int, bytes]]) -> bytes:
+    """Build a multi-size ICO (PNG-compressed entries) for Windows installer + desktop."""
+    count = len(entries)
+    header = struct.pack("<HHH", 0, 1, count)
+    offset = 6 + 16 * count
+    dir_entries = b""
+    data = b""
+    for size, png in entries:
+        dim = 0 if size >= 256 else size
+        dir_entries += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32, len(png), offset)
+        data += png
+        offset += len(png)
+    return header + dir_entries + data
 
 
 def main() -> None:
-    ROOT.mkdir(parents=True, exist_ok=True)
-    p32 = png_bytes(32)
-    p128 = png_bytes(128)
-    p256 = png_bytes(256)
-    (ROOT / "32x32.png").write_bytes(p32)
-    (ROOT / "128x128.png").write_bytes(p128)
-    (ROOT / "icon.png").write_bytes(p256)
-    (ROOT / "icon.ico").write_bytes(ico_from_png(p256, 256))
-    print(f"Wrote icons in {ROOT}")
+    ICONS.mkdir(parents=True, exist_ok=True)
+    src = load_source()
+
+    # Keep a crisp copy next to the agent UI for brand.js embedding / window chrome.
+    ui_logo = make_square_icon(src, 256, pad_ratio=0.08)
+    ui_logo.save(SRC_LOGO, format="PNG", optimize=True)
+
+    p32 = make_square_icon(src, 32, pad_ratio=0.1)
+    p48 = make_square_icon(src, 48, pad_ratio=0.1)
+    p64 = make_square_icon(src, 64, pad_ratio=0.1)
+    p128 = make_square_icon(src, 128, pad_ratio=0.1)
+    p256 = make_square_icon(src, 256, pad_ratio=0.08)
+
+    (ICONS / "32x32.png").write_bytes(png_bytes(p32))
+    (ICONS / "128x128.png").write_bytes(png_bytes(p128))
+    (ICONS / "icon.png").write_bytes(png_bytes(p256))
+
+    ico = ico_from_pngs(
+        [
+            (32, png_bytes(p32)),
+            (48, png_bytes(p48)),
+            (64, png_bytes(p64)),
+            (128, png_bytes(p128)),
+            (256, png_bytes(p256)),
+        ]
+    )
+    (ICONS / "icon.ico").write_bytes(ico)
+    print(f"Wrote icons in {ICONS}")
+    print(f"Wrote UI logo {SRC_LOGO}")
 
 
 if __name__ == "__main__":

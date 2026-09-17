@@ -70,8 +70,6 @@ const CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The render window lives off every monitor so nothing flashes on the till.
 const OFFSCREEN_ORIGIN: i32 = -30_000;
-/// Blank paper left after the last dot, so the cut does not clip a descender.
-const TRAILING_DOT_ROWS: u32 = 2;
 
 pub fn init() -> Result<()> {
     if JOB_TX.get().is_some() {
@@ -233,10 +231,20 @@ fn render_and_print(
 fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Result<Vec<u8>> {
     let (layout_mm, width_dots) = escpos_raster::paper_geometry_for_printer(paper_mm, printer);
     let scale = escpos_raster::rasterization_scale(layout_mm, width_dots);
-    let wide_head = paper_mm > 58 && escpos_raster::is_wide_80mm_left_align_head(printer);
-    // Physical head on these units is closer to full 80mm (640 dots). Render a
-    // slightly wider band, then centre it so leftover paper is not all on the right.
-    let payload_width = if wide_head { 640 } else { width_dots };
+    let wide_head = paper_mm > 58 && !escpos_raster::is_narrow_band_80mm_head(printer);
+    // Wide heads left-align the payload: send a full-width (640) bitmap so the
+    // receipt fills the roll the way Bixolon fills its 576-dot band.
+    let payload_width = width_dots;
+    let trailing_rows = if wide_head {
+        escpos_raster::TRAILING_BLANK_ROWS_WIDE_HEAD
+    } else {
+        escpos_raster::TRAILING_BLANK_ROWS_DEFAULT
+    };
+    let cut_feed = if wide_head {
+        escpos_raster::CUT_FEED_UNITS_WIDE_HEAD
+    } else {
+        escpos_raster::CUT_FEED_UNITS_DEFAULT
+    };
 
     let controller3: ICoreWebView2Controller3 = handles
         .controller
@@ -265,6 +273,9 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Resul
         layout_mm,
         width_dots,
         payload_width,
+        wide_head,
+        trailing_rows,
+        cut_feed,
         height_css,
         height_dots,
         printer,
@@ -278,18 +289,23 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Resul
     }
 
     let bitmap = escpos_raster::trim_leading_blank_rows(bitmap);
-    let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, TRAILING_DOT_ROWS);
-    let bitmap = if wide_head {
-        escpos_raster::pad_bitmap_to_head_centered(bitmap, payload_width)
-    } else {
-        escpos_raster::pad_bitmap_to_head(bitmap, width_dots)
-    };
+    // Keep a tiny existing margin if the capture had one, then always append
+    // enough white so branding is not flush with the cut (esp. Black Copper).
+    let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, 4);
+    let bitmap = escpos_raster::append_blank_rows(bitmap, trailing_rows);
+    // Full-width capture already matches the head — left-align pad is a no-op
+    // when widths match; still run it so a slightly narrow capture fills left.
+    let bitmap = escpos_raster::pad_bitmap_to_head(bitmap, payload_width);
     let nudge = escpos_raster::left_margin_nudge_dots(printer, paper_mm);
     let bitmap = escpos_raster::shift_content_left(bitmap, nudge);
     if nudge > 0 {
         tracing::info!(printer, nudge, "applied printer left-margin nudge");
     }
-    Ok(escpos_raster::escpos_payload(&bitmap, payload_width))
+    Ok(escpos_raster::escpos_payload_with_cut_feed(
+        &bitmap,
+        payload_width,
+        cut_feed,
+    ))
 }
 
 unsafe fn resize_surface(handles: &EngineHandles, width: u32, height: u32) -> Result<()> {
@@ -632,10 +648,18 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     el.style.setProperty('background','#fff','important');
     if (el.classList && el.classList.contains('thermal-receipt-body')) {{
       el.style.setProperty('padding-top','0','important');
-      el.style.setProperty('padding-bottom','0','important');
-      var pad = mm >= 76 ? '2mm' : (mm >= 72 ? '3mm' : '2mm');
+      // Leave air under Finvoroo branding so the cut is not flush with the logo.
+      el.style.setProperty('padding-bottom', mm >= 80 ? '4mm' : '2mm', 'important');
+      var pad = mm >= 80 ? '3mm' : (mm >= 72 ? '3mm' : '2mm');
       el.style.setProperty('padding-left', pad, 'important');
       el.style.setProperty('padding-right', pad, 'important');
+    }}
+    if (el.classList && el.classList.contains('thermal-system-brand')) {{
+      el.style.setProperty('padding-bottom', '3mm', 'important');
+      el.style.setProperty('margin-bottom', '0', 'important');
+    }}
+    if (el.classList && el.classList.contains('thermal-footer')) {{
+      el.style.setProperty('padding-bottom', '2mm', 'important');
     }}
     if (el.classList && el.classList.contains('thermal-header')) {{
       el.style.setProperty('margin','0','important');

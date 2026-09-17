@@ -33,31 +33,62 @@ pub fn paper_geometry(paper_mm: u32) -> (u32, u32) {
     }
 }
 
-/// Black Copper (and similar) 80mm heads left-align a 576-dot raster and leave a
-/// large empty strip on the right of the roll. Bixolon fills its printable band,
-/// so the same job looks full-width there and cramped-left on Black Copper.
-/// Use a wider layout for those printers so content matches the Bixolon look.
-pub fn is_wide_80mm_left_align_head(printer: &str) -> bool {
-    let hay = printer.to_ascii_lowercase();
-    hay.contains("black copper")
-        || hay.contains("blackcopper")
-        || hay.contains("bc-96")
-        || hay.contains("bc96")
-        || hay.contains("bc-98")
-        || hay.contains("bc98")
-        || hay.contains("bc-85")
-        || hay.contains("bc85")
+/// Premium heads (Bixolon / Epson TM / Star) fill a 72mm (576-dot) band correctly.
+/// Most other 80mm POS printers (Black Copper, Xprinter, Rongta, generic POS-80, …)
+/// left-align a 576-dot job and leave empty paper on the right — they need a
+/// full 80mm / 640-dot raster. Universal default is full-width; only known
+/// narrow-band brands keep 576.
+pub fn is_narrow_band_80mm_head(printer: &str) -> bool {
+    let hay = printer.to_ascii_lowercase().replace('_', " ");
+    // Bixolon SRP / BC-95 (Bixolon OEM). Do not match Black Copper BC-96.
+    if hay.contains("bixolon")
+        || hay.contains("srp-")
+        || hay.contains("srp ")
+        || hay.contains("srp330")
+        || hay.contains("srp350")
+        || hay.contains("srp382")
+        || hay.contains("bc-95")
+        || hay.contains("bc95")
+    {
+        return true;
+    }
+    // Epson TM thermal, Star Micronics, Citizen CT — classic 576-dot ESC/POS.
+    if hay.contains("epson")
+        || hay.contains("tm-t")
+        || hay.contains("tm-m")
+        || hay.contains("tm-u")
+        || hay.contains("tm-p")
+        || hay.contains("star micronics")
+        || hay.contains("star tsp")
+        || hay.contains("tsp100")
+        || hay.contains("tsp143")
+        || hay.contains("citizen ct")
+        || hay.contains("citizen cbm")
+    {
+        return true;
+    }
+    false
 }
 
-/// Geometry for the named printer. Falls back to [`paper_geometry`] when the
-/// printer does not need a wider 80mm band.
+/// @deprecated Prefer [`is_narrow_band_80mm_head`] — wide-head is now the default.
+pub fn is_wide_80mm_left_align_head(printer: &str) -> bool {
+    !is_narrow_band_80mm_head(printer)
+}
+
+/// Geometry for the named printer.
+///
+/// Universal rule for 80mm: full head (80mm / 640 dots) so content fills the
+/// roll on Black Copper, Xprinter, and unknown brands. Only known narrow-band
+/// printers (Bixolon etc.) keep the classic 72mm / 576 layout.
 pub fn paper_geometry_for_printer(paper_mm: u32, printer: &str) -> (u32, u32) {
-    if paper_mm > 58 && is_wide_80mm_left_align_head(printer) {
-        // 76mm @ 8 dots/mm = 608. Leaves a small gutter on a true 80mm head
-        // without clipping printers that top out near 640 dots.
-        return (76, 608);
+    if paper_mm <= 58 {
+        return paper_geometry(paper_mm);
     }
-    paper_geometry(paper_mm)
+    if is_narrow_band_80mm_head(printer) {
+        return paper_geometry(paper_mm); // 72, 576
+    }
+    // Full 80mm @ 8 dots/mm = 640.
+    (80, 640)
 }
 
 /// Device scale that makes the laid-out width land on exactly `width_dots`, so one
@@ -169,18 +200,22 @@ pub fn trim_leading_blank_columns(bitmap: MonoBitmap) -> MonoBitmap {
 
 /// Extra left margin some heads still apply to raster jobs after `GS L 0`.
 /// Keep this at or under the CSS gutter (3mm / 24 dots on 80mm) so a nudge
-/// never eats the table or TOTAL box.
+/// never eats the table or TOTAL box. Only narrow-band printers need this.
 pub fn left_margin_nudge_dots(printer: &str, paper_mm: u32) -> u32 {
+    if !is_narrow_band_80mm_head(printer) {
+        return 0;
+    }
     let hay = printer.to_ascii_lowercase();
-    let bixolon = hay.contains("bixolon")
+    // Bixolon (incl. BC-95) still restores a leftover left margin after GS L 0.
+    let bixolon_family = hay.contains("bixolon")
         || hay.contains("srp-")
         || hay.contains("srp ")
         || hay.contains("srp330")
         || hay.contains("srp350")
         || hay.contains("srp382")
         || hay.contains("bc-95")
-        || hay.contains("bc95ac");
-    if !bixolon {
+        || hay.contains("bc95");
+    if !bixolon_family {
         return 0;
     }
     if paper_mm <= 58 {
@@ -381,6 +416,32 @@ pub fn trim_trailing_blank_rows(bitmap: MonoBitmap, keep_rows: u32) -> MonoBitma
     }
 }
 
+/// Append pure-white rows after the last ink so the cut sits clear of branding.
+/// [`trim_trailing_blank_rows`] alone cannot invent space when the capture ends
+/// on the last inked row (common with `padding-bottom: 0`).
+pub fn append_blank_rows(bitmap: MonoBitmap, rows: u32) -> MonoBitmap {
+    if rows == 0 || bitmap.width == 0 {
+        return bitmap;
+    }
+    let stride = bitmap.stride();
+    let mut bits = bitmap.bits;
+    bits.resize(bits.len() + stride * rows as usize, 0);
+    MonoBitmap {
+        width: bitmap.width,
+        height: bitmap.height + rows,
+        bits,
+    }
+}
+
+/// Default feed units before partial cut (`GS V 66 n`). ~1 unit ≈ 0.125mm at 203dpi.
+pub const CUT_FEED_UNITS_DEFAULT: u8 = 48;
+/// Extra feed for heads that cut close to the print line (~10mm).
+pub const CUT_FEED_UNITS_WIDE_HEAD: u8 = 80;
+/// White rows after branding for every printer (~6mm @ 8 dots/mm).
+pub const TRAILING_BLANK_ROWS_DEFAULT: u32 = 48;
+/// Extra white rows for left-align / short head-to-cutter printers (~8mm).
+pub const TRAILING_BLANK_ROWS_WIDE_HEAD: u32 = 64;
+
 /// Zero left margin and claim the full head width before raster data. Bixolon units
 /// often restore a saved NV margin on `ESC @`, so margin and width are asserted twice.
 fn write_escpos_init(out: &mut Vec<u8>, head_width_dots: u32) {
@@ -400,6 +461,15 @@ fn write_escpos_init(out: &mut Vec<u8>, head_width_dots: u32) {
 /// Wrap a bitmap in an ESC/POS job: reset, print the bit image in bands, then feed
 /// clear of the head and cut once.
 pub fn escpos_payload(bitmap: &MonoBitmap, head_width_dots: u32) -> Vec<u8> {
+    escpos_payload_with_cut_feed(bitmap, head_width_dots, CUT_FEED_UNITS_DEFAULT)
+}
+
+/// Like [`escpos_payload`], with an explicit feed before the partial cut.
+pub fn escpos_payload_with_cut_feed(
+    bitmap: &MonoBitmap,
+    head_width_dots: u32,
+    cut_feed_units: u8,
+) -> Vec<u8> {
     let stride = bitmap.stride();
     let mut out = Vec::with_capacity(bitmap.bits.len() + 256);
     write_escpos_init(&mut out, head_width_dots);
@@ -421,8 +491,8 @@ pub fn escpos_payload(bitmap: &MonoBitmap, head_width_dots: u32) -> Vec<u8> {
         row += rows;
     }
 
-    // GS V 66 8 — feed ~1mm past the last dot row, then partial cut.
-    out.extend_from_slice(&[0x1d, 0x56, 0x42, 0x08]);
+    // GS V 66 n — feed n units past the last dot row, then partial cut.
+    out.extend_from_slice(&[0x1d, 0x56, 0x42, cut_feed_units]);
     out
 }
 
@@ -437,18 +507,31 @@ mod tests {
     }
 
     #[test]
-    fn black_copper_80mm_uses_wider_printable_band() {
+    fn black_copper_and_unknown_80mm_use_full_head_width() {
         assert_eq!(
             paper_geometry_for_printer(80, "Black Copper POS-80"),
-            (76, 608)
+            (80, 640)
         );
         assert_eq!(
             paper_geometry_for_printer(80, "BlackCopper BC-96AC"),
-            (76, 608)
+            (80, 640)
         );
-        // Bixolon stays on the standard 72mm band.
+        assert_eq!(
+            paper_geometry_for_printer(80, "Black Copper BC-86AC"),
+            (80, 640)
+        );
+        assert_eq!(paper_geometry_for_printer(80, "BC96AC"), (80, 640));
+        // Unknown / generic POS printers also get full width (universal default).
+        assert_eq!(paper_geometry_for_printer(80, "POS-80"), (80, 640));
+        assert_eq!(paper_geometry_for_printer(80, "Xprinter XP-N160II"), (80, 640));
+        assert_eq!(paper_geometry_for_printer(80, "Rongta RP80"), (80, 640));
+        // Bixolon / Epson keep the classic 72mm band.
         assert_eq!(
             paper_geometry_for_printer(80, "Bixolon SRP-350plusIII"),
+            (72, 576)
+        );
+        assert_eq!(
+            paper_geometry_for_printer(80, "Epson TM-T88VI"),
             (72, 576)
         );
         assert_eq!(
@@ -458,11 +541,18 @@ mod tests {
     }
 
     #[test]
-    fn wide_head_detector_matches_black_copper_names() {
-        assert!(is_wide_80mm_left_align_head("Black Copper POS-80"));
+    fn narrow_band_detector_only_matches_known_premium_heads() {
+        assert!(is_narrow_band_80mm_head("Bixolon SRP-350plusIII"));
+        assert!(is_narrow_band_80mm_head("Bixolon BC-95AC"));
+        assert!(is_narrow_band_80mm_head("Epson TM-T20III"));
+        assert!(!is_narrow_band_80mm_head("Black Copper POS-80"));
+        assert!(!is_narrow_band_80mm_head("BC-96AC"));
+        assert!(!is_narrow_band_80mm_head("BC86"));
+        assert!(!is_narrow_band_80mm_head("Xprinter XP-N160II"));
+        assert!(!is_narrow_band_80mm_head("POS-80 USB"));
+        // Wide-head helper is the inverse.
         assert!(is_wide_80mm_left_align_head("BC-96AC"));
         assert!(!is_wide_80mm_left_align_head("Bixolon SRP-350plusIII"));
-        assert!(!is_wide_80mm_left_align_head("Xprinter XP-N160II"));
     }
 
     /// 8 dots/mm at 203 dpi: the layout width must be exactly the width the head
@@ -621,7 +711,7 @@ mod tests {
         let payload = escpos_payload(&bitmap, 8);
 
         assert!(payload.starts_with(&[0x1b, 0x40]));
-        assert!(payload.ends_with(&[0x1d, 0x56, 0x42, 0x08]));
+        assert!(payload.ends_with(&[0x1d, 0x56, 0x42, CUT_FEED_UNITS_DEFAULT]));
 
         let bands = payload
             .windows(4)
@@ -631,7 +721,7 @@ mod tests {
 
         let cuts = payload
             .windows(4)
-            .filter(|w| *w == [0x1d, 0x56, 0x42, 0x08])
+            .filter(|w| *w == [0x1d, 0x56, 0x42, CUT_FEED_UNITS_DEFAULT])
             .count();
         assert_eq!(cuts, 1, "exactly one cut per receipt");
     }
