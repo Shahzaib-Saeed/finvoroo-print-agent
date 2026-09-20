@@ -41,6 +41,12 @@ struct PairRequest {
     workstation_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ReconnectRequest {
+    #[serde(default)]
+    origin: Option<String>,
+}
+
 pub async fn serve(app: AppState, port: u16) -> anyhow::Result<()> {
     let state = HttpState {
         app,
@@ -77,6 +83,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/print", post(print_handler))
         .route("/warm", post(warm_handler))
         .route("/pair", post(pair_handler))
+        .route("/reconnect", post(reconnect_handler))
         .route("/settings", get(settings))
         .layer(RequestBodyLimitLayer::new(MAX_BODY))
         .layer(cors)
@@ -92,6 +99,7 @@ pub fn http_state(app: AppState) -> HttpState {
 
 async fn status(State(state): State<HttpState>) -> impl IntoResponse {
     let cfg = state.app.config.read().await;
+    let paired = cfg.paired_origin.is_some() && !cfg.token.trim().is_empty();
     Json(serde_json::json!({
         "running": true,
         "version": VERSION,
@@ -102,6 +110,8 @@ async fn status(State(state): State<HttpState>) -> impl IntoResponse {
         "auth_required": true,
         "pairing_required": true,
         "pairing_available": true,
+        "paired": paired,
+        "reconnect_available": paired,
         "capabilities": { "html": print::SUPPORTS_HTML },
     }))
 }
@@ -184,6 +194,53 @@ async fn pair_handler(
         "ok": true,
         "token": cfg.token,
         "origin": origin,
+        "version": VERSION,
+    }))
+    .into_response()
+}
+
+async fn reconnect_handler(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<ReconnectRequest>,
+) -> Response {
+    let origin = auth::origin_from_headers(&headers)
+        .or(req.origin.clone())
+        .unwrap_or_default();
+    if origin.is_empty() || !auth::origin_is_allowed(&origin) {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "Origin is not allowed to reconnect with Finvoroo Print Agent",
+        );
+    }
+
+    let cfg = state.app.config.read().await;
+    let Some(paired_origin) = cfg.paired_origin.as_ref() else {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "Print Agent is not paired yet — enter the 6-digit code from the agent window",
+        );
+    };
+    if cfg.token.trim().is_empty() {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Print Agent token is missing — regenerate it from the agent window",
+        );
+    }
+    if !auth::origins_match_for_reconnect(paired_origin, &origin) {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "This Finvoroo address does not match the paired till — open the same URL or pair again",
+        );
+    }
+
+    tracing::info!(origin = %origin, "Finvoroo reconnected with print agent");
+
+    Json(serde_json::json!({
+        "ok": true,
+        "token": cfg.token,
+        "origin": origin,
+        "reconnected": true,
         "version": VERSION,
     }))
     .into_response()

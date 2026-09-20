@@ -27,6 +27,38 @@ pub fn tokens_match(expected: &str, provided: &str) -> bool {
         == 0
 }
 
+/// Treat localhost / 127.0.0.1 / ::1 with the same port as one till origin so
+/// reconnect works when the browser bookmark uses a different loopback host.
+fn normalize_origin_key(origin: &str) -> Option<(String, u16)> {
+    let url = http::Uri::try_from(origin.trim()).ok()?;
+    let host = url.host()?.to_ascii_lowercase();
+    let scheme = url.scheme_str()?;
+    let port = url.port_u16().unwrap_or(if scheme == "https" { 443 } else { 80 });
+    let normalized_host = match host.as_str() {
+        "localhost" | "127.0.0.1" | "::1" => "localhost".to_string(),
+        other => other.to_string(),
+    };
+    Some((normalized_host, port))
+}
+
+pub fn origins_match_for_reconnect(expected: &str, provided: &str) -> bool {
+    let expected = expected.trim();
+    let provided = provided.trim();
+    if expected.is_empty() || provided.is_empty() {
+        return false;
+    }
+    if expected == provided {
+        return true;
+    }
+    match (
+        normalize_origin_key(expected),
+        normalize_origin_key(provided),
+    ) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
 pub fn origin_is_allowed(origin: &str) -> bool {
     let Ok(url) = http::Uri::try_from(origin.trim()) else {
         return false;
@@ -96,6 +128,18 @@ mod tests {
         assert!(!origin_is_allowed("https://evil.example"));
         assert!(!origin_is_allowed("http://finvoroo.com"));
         assert!(!origin_is_allowed("https://finvoroo.com.evil.test"));
+    }
+
+    #[test]
+    fn loopback_origins_match_for_reconnect() {
+        assert!(origins_match_for_reconnect(
+            "http://localhost:47391",
+            "http://127.0.0.1:47391"
+        ));
+        assert!(!origins_match_for_reconnect(
+            "http://localhost:47391",
+            "http://localhost:5173"
+        ));
     }
 
     #[test]

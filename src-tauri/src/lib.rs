@@ -252,8 +252,13 @@ pub fn run() {
 
             let http_state = state.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = server::serve(http_state, port).await {
-                    tracing::error!("print agent HTTP API failed: {err:#}");
+                loop {
+                    if let Err(err) = server::serve(http_state.clone(), port).await {
+                        tracing::error!(
+                            "print agent HTTP API failed: {err:#}; restarting in 2 seconds"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
                 }
             });
 
