@@ -234,14 +234,13 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Resul
     // 640-dot payload — equal gutters left/right on Black Copper paper.
     let (layout_mm, width_dots) = escpos_raster::paper_geometry(paper_mm);
     let scale = escpos_raster::rasterization_scale(layout_mm, width_dots);
-    let wide_head = paper_mm > 58 && !escpos_raster::is_narrow_band_80mm_head(printer);
     let payload_width = escpos_raster::payload_width_dots(paper_mm, printer);
-    let trailing_rows = if wide_head {
+    let trailing_rows = if paper_mm > 58 {
         escpos_raster::TRAILING_BLANK_ROWS_WIDE_HEAD
     } else {
         escpos_raster::TRAILING_BLANK_ROWS_DEFAULT
     };
-    let cut_feed = if wide_head {
+    let cut_feed = if paper_mm > 58 {
         escpos_raster::CUT_FEED_UNITS_WIDE_HEAD
     } else {
         escpos_raster::CUT_FEED_UNITS_DEFAULT
@@ -274,7 +273,6 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Resul
         layout_mm,
         width_dots,
         payload_width,
-        wide_head,
         trailing_rows,
         cut_feed,
         height_css,
@@ -292,17 +290,12 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Resul
     let bitmap = escpos_raster::trim_leading_blank_rows(bitmap);
     let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, 4);
     let bitmap = escpos_raster::append_blank_rows(bitmap, trailing_rows);
-    let bitmap = if wide_head {
-        // Crop ink, then centre in 640 so left-aligning heads look balanced.
+    let bitmap = if paper_mm > 58 {
+        // One path for every 80mm brand: crop to ink, centre in 640-dot payload.
         escpos_raster::center_content_on_head(bitmap, payload_width)
     } else {
         escpos_raster::pad_bitmap_to_head(bitmap, width_dots)
     };
-    let nudge = escpos_raster::left_margin_nudge_dots(printer, paper_mm);
-    let bitmap = escpos_raster::shift_content_left(bitmap, nudge);
-    if nudge > 0 {
-        tracing::info!(printer, nudge, "applied printer left-margin nudge");
-    }
     Ok(escpos_raster::escpos_payload_with_cut_feed(
         &bitmap,
         payload_width,

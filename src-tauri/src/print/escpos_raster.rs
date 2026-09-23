@@ -29,7 +29,9 @@ pub fn paper_geometry(paper_mm: u32) -> (u32, u32) {
     if paper_mm <= 58 {
         (48, 384)
     } else {
-        (72, 576)
+        // Conservative 68mm band on 80mm rolls — fits every common ESC/POS head
+        // (Bixolon 576-dot, Black Copper / Xprinter 640-dot) when centred below.
+        (68, 544)
     }
 }
 
@@ -85,14 +87,13 @@ pub fn paper_geometry_for_printer(paper_mm: u32, _printer: &str) -> (u32, u32) {
     paper_geometry(paper_mm)
 }
 
-/// ESC/POS payload width for the printer. Wide left-align heads need a full
-/// 80mm (640-dot) canvas so we can centre the 576-dot layout on the roll.
-pub fn payload_width_dots(paper_mm: u32, printer: &str) -> u32 {
-    let (_, width_dots) = paper_geometry(paper_mm);
-    if paper_mm > 58 && !is_narrow_band_80mm_head(printer) {
+/// ESC/POS payload width for the printer. Every 80mm roll uses the full 640-dot
+/// canvas so the layout band is centred with equal gutters on all brands.
+pub fn payload_width_dots(paper_mm: u32, _printer: &str) -> u32 {
+    if paper_mm > 58 {
         return 640;
     }
-    width_dots
+    paper_geometry(paper_mm).1
 }
 
 /// Device scale that makes the laid-out width land on exactly `width_dots`, so one
@@ -202,31 +203,10 @@ pub fn trim_leading_blank_columns(bitmap: MonoBitmap) -> MonoBitmap {
     }
 }
 
-/// Extra left margin some heads still apply to raster jobs after `GS L 0`.
-/// Keep this at or under the CSS gutter (3mm / 24 dots on 80mm) so a nudge
-/// never eats the table or TOTAL box. Only narrow-band printers need this.
-pub fn left_margin_nudge_dots(printer: &str, paper_mm: u32) -> u32 {
-    if !is_narrow_band_80mm_head(printer) {
-        return 0;
-    }
-    let hay = printer.to_ascii_lowercase();
-    // Bixolon (incl. BC-95) still restores a leftover left margin after GS L 0.
-    let bixolon_family = hay.contains("bixolon")
-        || hay.contains("srp-")
-        || hay.contains("srp ")
-        || hay.contains("srp330")
-        || hay.contains("srp350")
-        || hay.contains("srp382")
-        || hay.contains("bc-95")
-        || hay.contains("bc95");
-    if !bixolon_family {
-        return 0;
-    }
-    if paper_mm <= 58 {
-        16
-    } else {
-        24
-    }
+/// Per-printer left nudge — disabled. Universal layout centres the band in a
+/// 640-dot payload instead of shifting per Windows driver name.
+pub fn left_margin_nudge_dots(_printer: &str, _paper_mm: u32) -> u32 {
+    0
 }
 
 /// Expand (or crop) a bitmap to exactly the head width, left-aligned. Many thermal
@@ -564,41 +544,29 @@ mod tests {
     #[test]
     fn geometry_uses_printable_width_not_roll_width() {
         assert_eq!(paper_geometry(58), (48, 384));
-        assert_eq!(paper_geometry(80), (72, 576));
+        assert_eq!(paper_geometry(80), (68, 544));
     }
 
     #[test]
-    fn layout_stays_classic_band_payload_widens_for_left_align_heads() {
-        // Layout is always the printable band so type size matches Bixolon.
-        assert_eq!(
-            paper_geometry_for_printer(80, "Black Copper POS-80"),
-            (72, 576)
-        );
-        assert_eq!(
-            paper_geometry_for_printer(80, "BlackCopper BC-96AC"),
-            (72, 576)
-        );
-        assert_eq!(
-            paper_geometry_for_printer(80, "Xprinter XP-N160II"),
-            (72, 576)
-        );
-        assert_eq!(
-            paper_geometry_for_printer(80, "Bixolon SRP-350plusIII"),
-            (72, 576)
-        );
+    fn layout_is_universal_and_payload_centres_on_80mm() {
+        for printer in [
+            "Black Copper POS-80",
+            "BlackCopper BC-96AC",
+            "Bixolon SRP-350plusIII",
+            "Epson TM-T88VI",
+            "Xprinter XP-N160II",
+        ] {
+            assert_eq!(
+                paper_geometry_for_printer(80, printer),
+                (68, 544),
+                "{printer}"
+            );
+            assert_eq!(payload_width_dots(80, printer), 640, "{printer}");
+        }
         assert_eq!(
             paper_geometry_for_printer(58, "Black Copper POS-80"),
             (48, 384)
         );
-        // Wide left-align heads get a 640-dot payload so we can centre the band.
-        assert_eq!(payload_width_dots(80, "Black Copper POS-80"), 640);
-        assert_eq!(payload_width_dots(80, "BlackCopper BC-96AC"), 640);
-        assert_eq!(payload_width_dots(80, "BC96AC"), 640);
-        assert_eq!(payload_width_dots(80, "POS-80"), 640);
-        assert_eq!(payload_width_dots(80, "Xprinter XP-N160II"), 640);
-        assert_eq!(payload_width_dots(80, "Rongta RP80"), 640);
-        assert_eq!(payload_width_dots(80, "Bixolon SRP-350plusIII"), 576);
-        assert_eq!(payload_width_dots(80, "Epson TM-T88VI"), 576);
         assert_eq!(payload_width_dots(58, "Black Copper POS-80"), 384);
     }
 
@@ -687,12 +655,10 @@ mod tests {
     }
 
     #[test]
-    fn bixolon_gets_a_small_left_nudge_on_80mm() {
-        assert_eq!(left_margin_nudge_dots("Bixolon SRP-350plusIII", 80), 24);
-        assert_eq!(left_margin_nudge_dots("BC-95AC", 80), 24);
+    fn left_margin_nudge_is_disabled_for_universal_layout() {
+        assert_eq!(left_margin_nudge_dots("Bixolon SRP-350plusIII", 80), 0);
         assert_eq!(left_margin_nudge_dots("Black Copper POS-80", 80), 0);
-        assert_eq!(left_margin_nudge_dots("Xprinter XP-N160II", 80), 0);
-        assert_eq!(left_margin_nudge_dots("Bixolon SRP-330", 58), 16);
+        assert_eq!(left_margin_nudge_dots("Xprinter XP-N160II", 58), 0);
     }
 
     #[test]
