@@ -26,9 +26,10 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 use super::{
-    build_test_pdf, classify_printer, decode_payload, thermal_test_escpos, zebra_test_zpl, JobKind,
-    PrintRequest, PrinterInfo,
+    build_test_pdf, decode_payload, resolve_printer, test_kind_for_printer, thermal_test_escpos,
+    zebra_test_zpl, JobKind, PrintRequest, PrinterInfo,
 };
+use windows::Win32::Foundation::GetLastError;
 
 const ESCPOS_OPEN_DRAWER: &[u8] = &[0x1b, 0x70, 0x00, 0x19, 0xfa];
 /// Feed a few lines then GS V 66 n (feed n×0.125mm and cut). Thermal HTML jobs
@@ -139,20 +140,23 @@ pub fn print_job(req: &PrintRequest) -> Result<()> {
     if req.data.trim().is_empty() {
         bail!("print data is empty");
     }
+    let printers = list_printers()?;
+    let printer = resolve_printer(&printers, &req.printer_id)?;
+    let printer_id = printer.id.as_str();
     let kind = JobKind::parse(&req.job_type)?;
     if kind == JobKind::Html {
         let paper_mm = req.options.as_ref().and_then(|o| o.paper_mm).unwrap_or(80);
         if paper_mm != 58 && paper_mm != 80 {
             bail!("options.paper_mm must be 58 or 80");
         }
-        match html_engine::print_html(&req.printer_id, &req.data, paper_mm)? {
+        match html_engine::print_html(printer_id, &req.data, paper_mm)? {
             // Dots straight to the head: the driver never sees a page, so it cannot
             // scale the receipt down or split the last row onto another page.
             html_engine::HtmlOutcome::Raster(payload) => {
-                print_raw(&req.printer_id, &payload)?;
+                print_raw(printer_id, &payload)?;
             }
             html_engine::HtmlOutcome::Printed => {
-                if let Err(err) = print_raw(&req.printer_id, ESCPOS_FEED_AND_CUT) {
+                if let Err(err) = print_raw(printer_id, ESCPOS_FEED_AND_CUT) {
                     tracing::warn!("thermal cut after HTML print failed: {err:#}");
                 }
             }
@@ -163,38 +167,31 @@ pub fn print_job(req: &PrintRequest) -> Result<()> {
             .and_then(|o| o.open_drawer)
             .unwrap_or(false)
         {
-            open_cash_drawer(&req.printer_id)?;
+            open_cash_drawer(printer_id)?;
         }
         return Ok(());
     }
 
     let bytes = decode_payload(&req.data, req.encoding.as_deref(), kind)?;
     match kind {
-        JobKind::Zpl | JobKind::Raw | JobKind::EscPos => print_raw(&req.printer_id, &bytes),
-        JobKind::Pdf => print_pdf(&req.printer_id, &bytes),
+        JobKind::Zpl | JobKind::Raw | JobKind::EscPos => print_raw(printer_id, &bytes),
+        JobKind::Pdf => print_pdf(printer_id, &bytes),
         JobKind::Html => unreachable!(),
     }
 }
 
 pub fn test_print(printer_id: &str) -> Result<()> {
-    let id = printer_id.trim();
-    if id.is_empty() {
-        bail!("No printer selected");
-    }
     let printers = list_printers()?;
-    let kind = printers
-        .iter()
-        .find(|p| p.id.eq_ignore_ascii_case(id))
-        .map(|p| p.printer_type.as_str())
-        .unwrap_or("windows");
+    let printer = resolve_printer(&printers, printer_id)?;
+    let kind = test_kind_for_printer(printer);
 
     if kind == "zebra" {
-        return print_raw(id, zebra_test_zpl().as_bytes());
+        return print_raw(&printer.id, zebra_test_zpl().as_bytes());
     }
     if kind == "thermal" {
-        return print_raw(id, thermal_test_escpos());
+        return print_raw(&printer.id, thermal_test_escpos());
     }
-    print_pdf(id, &build_test_pdf())
+    print_pdf(&printer.id, &build_test_pdf())
 }
 
 pub fn print_raw(printer: &str, payload: &[u8]) -> Result<()> {
@@ -207,8 +204,13 @@ pub fn print_raw(printer: &str, payload: &[u8]) -> Result<()> {
 unsafe fn print_raw_inner(printer: &str, payload: &[u8]) -> Result<()> {
     let mut name = wide(printer);
     let mut handle = PRINTER_HANDLE::default();
-    OpenPrinterW(PCWSTR(name.as_mut_ptr()), &mut handle, None)
-        .map_err(|_| anyhow::anyhow!("Printer \"{}\" is unavailable.", printer))?;
+    OpenPrinterW(PCWSTR(name.as_mut_ptr()), &mut handle, None).map_err(|_| {
+        let code = unsafe { GetLastError().0 };
+        anyhow::anyhow!(
+            "Printer \"{}\" is unavailable (Windows error {code}). In Windows Settings open Printers, confirm the queue name matches exactly, then click Refresh printers here.",
+            printer
+        )
+    })?;
 
     let result = (|| {
         let mut doc_name = wide("Finvoroo Print Agent");
@@ -303,8 +305,13 @@ unsafe fn print_pdf_via_shell_inner(printer: &str, path: &PathBuf) -> Result<()>
         hProcess: HANDLE::default(),
     };
 
-    ShellExecuteExW(&mut info)
-        .map_err(|_| anyhow::anyhow!("Printer \"{}\" is unavailable.", printer))?;
+    ShellExecuteExW(&mut info).map_err(|_| {
+        let code = unsafe { GetLastError().0 };
+        anyhow::anyhow!(
+            "Printer \"{}\" could not receive a PDF test page (Windows error {code}). Receipt printers should show type · thermal — click Refresh printers after updating the agent.",
+            printer
+        )
+    })?;
     if info.hProcess.is_invalid() {
         return Ok(());
     }

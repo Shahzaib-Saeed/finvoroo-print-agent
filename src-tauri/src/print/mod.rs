@@ -136,12 +136,67 @@ pub fn classify_printer(name: &str, driver: Option<&str>) -> String {
         || hay.contains("bixolon")
         || hay.contains("bc-95")
         || hay.contains("bc95")
+        || hay.contains("bc-96")
+        || hay.contains("bc96")
+        || hay.contains("black copper")
+        || hay.contains("blackcopper")
+        || hay.contains("rongta")
         || hay.contains("xprinter")
         || hay.contains("citizen")
     {
         return "thermal".into();
     }
     "windows".into()
+}
+
+/// Match a user-selected id to the exact Windows queue name from EnumPrinters.
+pub fn resolve_printer<'a>(
+    printers: &'a [PrinterInfo],
+    requested: &str,
+) -> Result<&'a PrinterInfo, anyhow::Error> {
+    let req = requested.trim();
+    if req.is_empty() {
+        anyhow::bail!("No printer selected");
+    }
+    if let Some(p) = printers
+        .iter()
+        .find(|p| p.id == req || p.name == req || p.system_name == req)
+    {
+        return Ok(p);
+    }
+    let req_lower = req.to_ascii_lowercase();
+    if let Some(p) = printers.iter().find(|p| {
+        p.id.to_ascii_lowercase() == req_lower
+            || p.name.to_ascii_lowercase() == req_lower
+            || p.system_name.to_ascii_lowercase() == req_lower
+    }) {
+        return Ok(p);
+    }
+    if let Some(p) = printers.iter().find(|p| {
+        let name = p.name.to_ascii_lowercase();
+        name.contains(&req_lower) || req_lower.contains(&name)
+    }) {
+        return Ok(p);
+    }
+    anyhow::bail!(
+        "Printer \"{}\" was not found. Click Refresh printers and choose the queue from the list.",
+        req
+    )
+}
+
+pub fn test_kind_for_printer(info: &PrinterInfo) -> &'static str {
+    match info.printer_type.as_str() {
+        "zebra" | "thermal" => match info.printer_type.as_str() {
+            "zebra" => "zebra",
+            "thermal" => "thermal",
+            _ => "windows",
+        },
+        _ => match classify_printer(&info.name, info.driver.as_deref()).as_str() {
+            "zebra" => "zebra",
+            "thermal" => "thermal",
+            _ => "windows",
+        },
+    }
 }
 
 pub fn zebra_test_zpl() -> &'static str {
@@ -218,5 +273,20 @@ mod tests {
         assert_eq!(classify_printer("Zebra ZD421", Some("ZDesigner")), "zebra");
         assert_eq!(classify_printer("EPSON TM-T20", None), "thermal");
         assert_eq!(classify_printer("BC-95AC", Some("BIXOLON")), "thermal");
+        assert_eq!(classify_printer("BC-96AC", None), "thermal");
+        assert_eq!(classify_printer("Black Copper POS-80", None), "thermal");
+    }
+
+    #[test]
+    fn resolve_printer_matches_case_insensitive() {
+        let printers = vec![PrinterInfo {
+            id: "BC-96AC".into(),
+            name: "BC-96AC".into(),
+            system_name: "BC-96AC".into(),
+            default: true,
+            printer_type: "thermal".into(),
+            driver: None,
+        }];
+        assert_eq!(resolve_printer(&printers, "bc-96ac").unwrap().id, "BC-96AC");
     }
 }
