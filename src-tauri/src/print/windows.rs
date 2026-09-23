@@ -26,8 +26,8 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 use super::{
-    build_test_pdf, decode_payload, resolve_printer, test_kind_for_printer, thermal_test_escpos,
-    zebra_test_zpl, JobKind, PrintRequest, PrinterInfo,
+    build_test_pdf, classify_printer, decode_payload, resolve_printer, test_kind_for_printer,
+    thermal_test_escpos, zebra_test_zpl, JobKind, PrintRequest, PrinterInfo,
 };
 use windows::Win32::Foundation::GetLastError;
 
