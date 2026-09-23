@@ -27,6 +27,7 @@ Laravel checkout, FEFO, and journals are not involved. The agent prints PDF, HTM
 - Long-lived token is created on first launch and stored in `%APPDATA%\com.finvoroo.print-agent\config.json`
 - Token is **never** returned from `GET /status`
 - `POST /pair` returns the token only after a 60-second PIN shown in the agent window
+- `POST /reconnect` restores that same long-lived token from any allowlisted Finvoroo origin once this PC is paired (website, Desktop, localhost). Pairing is per machine, not per URL.
 - Print jobs require `X-Finvoroo-Print-Token` (or `Authorization: Bearer`)
 - Body cap 32 MB; print types are `pdf | html | zpl | escpos | raw`
 - The agent never executes shell commands from request payloads

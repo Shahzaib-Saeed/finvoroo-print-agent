@@ -31,3 +31,5 @@ Done
 Install your usual Windows printer drivers first (receipt printer, laser, Zebra, and so on). The Print Agent uses those printers.
 
 To update, run the newer `FinvorooPrintAgent-Setup.exe`. Your pairing stays on this PC.
+
+Pair **once**. After that the agent stays paired through reboots, internet outages, and switching between the Finvoroo website and Finvoroo Desktop. You only need a new code if you click **Regenerate token** in the agent window.

@@ -99,7 +99,7 @@ pub fn http_state(app: AppState) -> HttpState {
 
 async fn status(State(state): State<HttpState>) -> impl IntoResponse {
     let cfg = state.app.config.read().await;
-    let paired = cfg.paired_origin.is_some() && !cfg.token.trim().is_empty();
+    let paired = cfg.is_paired();
     Json(serde_json::json!({
         "running": true,
         "version": VERSION,
@@ -178,7 +178,7 @@ async fn pair_handler(
     if cfg.token.trim().is_empty() {
         cfg.token = auth::generate_token();
     }
-    cfg.paired_origin = Some(origin.clone());
+    cfg.remember_paired_origin(&origin);
     cfg.paired_at = Some(chrono_now());
     if let Err(err) = cfg.save(&state.app.config_path) {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
@@ -214,24 +214,34 @@ async fn reconnect_handler(
         );
     }
 
-    let cfg = state.app.config.read().await;
-    let Some(paired_origin) = cfg.paired_origin.as_ref() else {
+    let mut cfg = state.app.config.write().await;
+    if !cfg.is_paired() {
         return error_response(
             StatusCode::FORBIDDEN,
             "Print Agent is not paired yet — enter the 6-digit code from the agent window",
         );
-    };
+    }
     if cfg.token.trim().is_empty() {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Print Agent token is missing — regenerate it from the agent window",
         );
     }
-    if !auth::origins_match_for_reconnect(paired_origin, &origin) {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "This Finvoroo address does not match the paired till — open the same URL or pair again",
-        );
+
+    // Pairing is per PC. Once the PIN has been used, any allowlisted Finvoroo
+    // origin on this machine (website, desktop shell, localhost) may restore
+    // the token. Internet outages and URL switches must not require a new PIN.
+    let already_known = cfg.paired_origins.iter().any(|existing| {
+        auth::origins_match_for_reconnect(existing, &origin)
+    }) || cfg
+        .paired_origin
+        .as_ref()
+        .is_some_and(|existing| auth::origins_match_for_reconnect(existing, &origin));
+    if !already_known {
+        cfg.remember_paired_origin(&origin);
+        if let Err(err) = cfg.save(&state.app.config_path) {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+        }
     }
 
     tracing::info!(origin = %origin, "Finvoroo reconnected with print agent");
@@ -410,6 +420,7 @@ mod tests {
             port: 17392,
             default_printer_id: None,
             paired_origin: None,
+            paired_origins: Vec::new(),
             paired_at: None,
             first_run: false,
             installed_version: None,
@@ -545,6 +556,81 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn reconnect_works_from_any_allowed_origin_once_paired() {
+        let state = test_state();
+        let code = state.pairing.issue();
+        let app = router(http_state(state.clone()));
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/pair")
+                    .header("content-type", "application/json")
+                    .header("origin", "https://app.finvoroo.com")
+                    .body(Body::from(format!(r#"{{"code":"{code}"}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let app = router(http_state(state.clone()));
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/reconnect")
+                    .header("content-type", "application/json")
+                    .header("origin", "http://127.0.0.1:47391")
+                    .body(Body::from(r#"{"origin":"http://127.0.0.1:47391"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json(res).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(
+            body["token"],
+            "test-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(body["reconnected"], true);
+
+        let app = router(http_state(state.clone()));
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/reconnect")
+                    .header("content-type", "application/json")
+                    .header("origin", "https://evil.example")
+                    .body(Body::from(r#"{}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn reconnect_rejected_until_paired() {
+        let app = router(http_state(test_state()));
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/reconnect")
+                    .header("content-type", "application/json")
+                    .header("origin", "https://app.finvoroo.com")
+                    .body(Body::from(r#"{}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     /// Measures the real localhost round trip for `/print` over an actual TCP

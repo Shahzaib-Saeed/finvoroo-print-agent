@@ -21,6 +21,9 @@ Use a Windows 10/11 machine with **no** developer tools installed.
 - [ ] Short and long receipts (20+ lines) cut correctly on thermal paper
 - [ ] 58 mm paper setting works when configured in Print Agent settings.
 - [ ] Run a newer Setup.exe: pairing and printer selection still work (AppData preserved).
+- [ ] Pair in Chrome on `https://*.finvoroo.com`. Quit Chrome, go offline, open Finvoroo Desktop: printing works **without** entering a new PIN.
+- [ ] Come back online and open the website again: still paired, no PIN.
+- [ ] Reboot the till: agent autostarts, Finvoroo reconnects automatically, no PIN.
 
 ## Agent API (developer or IT)
 
