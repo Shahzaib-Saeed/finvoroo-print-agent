@@ -80,28 +80,17 @@ pub fn is_wide_80mm_left_align_head(printer: &str) -> bool {
 
 /// Geometry for the named printer.
 ///
-/// Bixolon / Epson / Star use the classic 72mm (576-dot) band. Every other
-/// common 80mm POS head (Black Copper, Xprinter, Rongta, generic POS-80) gets
-/// the full 80mm (640-dot) roll width so the ticket fills the paper instead of
-/// sitting as a narrow centred strip with huge side gutters.
-pub fn paper_geometry_for_printer(paper_mm: u32, printer: &str) -> (u32, u32) {
-    if paper_mm <= 58 {
-        return paper_geometry(paper_mm);
-    }
-    if is_narrow_band_80mm_head(printer) {
-        (72, 576)
-    } else {
-        (80, 640)
-    }
+/// Every 80mm head burns a 72mm (576-dot) printable band. Layout wider than
+/// that (80mm / 640 dots) clips the right column on Black Copper, Xprinter, and
+/// most generic POS-80 units — the band is then centred in a 640-dot payload.
+pub fn paper_geometry_for_printer(paper_mm: u32, _printer: &str) -> (u32, u32) {
+    paper_geometry(paper_mm)
 }
 
-/// ESC/POS payload width for the printer. Every 80mm roll uses the full 640-dot
-/// canvas so the layout band is centred with equal gutters on all brands.
-pub fn payload_width_dots(paper_mm: u32, printer: &str) -> u32 {
+/// ESC/POS payload width — the physical 80mm roll (640 dots). The 576-dot layout
+/// band is centred inside this canvas so left/right gutters stay equal.
+pub fn payload_width_dots(paper_mm: u32, _printer: &str) -> u32 {
     if paper_mm > 58 {
-        if is_narrow_band_80mm_head(printer) {
-            return 576;
-        }
         return 640;
     }
     paper_geometry(paper_mm).1
@@ -642,26 +631,20 @@ mod tests {
     }
 
     #[test]
-    fn layout_is_universal_and_payload_centres_on_80mm() {
+    fn layout_is_72mm_and_payload_centres_on_80mm_roll() {
         for printer in [
             "Black Copper POS-80",
             "BlackCopper BC-96AC",
             "Xprinter XP-N160II",
+            "Bixolon SRP-350plusIII",
+            "Epson TM-T88VI",
         ] {
-            assert_eq!(
-                paper_geometry_for_printer(80, printer),
-                (80, 640),
-                "{printer}"
-            );
-            assert_eq!(payload_width_dots(80, printer), 640, "{printer}");
-        }
-        for printer in ["Bixolon SRP-350plusIII", "Epson TM-T88VI"] {
             assert_eq!(
                 paper_geometry_for_printer(80, printer),
                 (72, 576),
                 "{printer}"
             );
-            assert_eq!(payload_width_dots(80, printer), 576, "{printer}");
+            assert_eq!(payload_width_dots(80, printer), 640, "{printer}");
         }
         assert_eq!(
             paper_geometry_for_printer(58, "Black Copper POS-80"),

@@ -623,10 +623,7 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     el.style.setProperty('position','static','important');
     el.style.setProperty('left','auto','important');
     el.style.setProperty('top','auto','important');
-    el.style.setProperty('margin-top','0','important');
-    el.style.setProperty('margin-bottom','0','important');
-    el.style.setProperty('margin-left','auto','important');
-    el.style.setProperty('margin-right','auto','important');
+    el.style.setProperty('margin','0','important');
     el.style.setProperty('transform','none','important');
     el.style.setProperty('visibility','visible','important');
     el.style.setProperty('display','block','important');
@@ -642,7 +639,7 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
       el.style.setProperty('padding-top','0','important');
       // Leave air under Finvoroo branding so the cut is not flush with the logo.
       el.style.setProperty('padding-bottom', mm >= 70 ? '3mm' : '2mm', 'important');
-      var pad = mm >= 70 ? '1mm' : '2mm';
+      var pad = mm >= 70 ? '1.5mm' : '2mm';
       el.style.setProperty('padding-left', pad, 'important');
       el.style.setProperty('padding-right', pad, 'important');
     }}
