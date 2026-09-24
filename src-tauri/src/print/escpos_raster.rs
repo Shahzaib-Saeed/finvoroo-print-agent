@@ -87,12 +87,10 @@ pub fn paper_geometry_for_printer(paper_mm: u32, _printer: &str) -> (u32, u32) {
     paper_geometry(paper_mm)
 }
 
-/// ESC/POS payload width — the physical 80mm roll (640 dots). The 576-dot layout
-/// band is centred inside this canvas so left/right gutters stay equal.
+/// ESC/POS payload width — must match the layout band (576 dots on 80mm).
+/// Padding a 576-dot capture into a 640-dot canvas clips the right column on
+/// Black Copper / generic POS-80 heads that only burn the first 576 dots.
 pub fn payload_width_dots(paper_mm: u32, _printer: &str) -> u32 {
-    if paper_mm > 58 {
-        return 640;
-    }
     paper_geometry(paper_mm).1
 }
 
@@ -348,14 +346,13 @@ fn content_ink_column_bounds(bitmap: &MonoBitmap) -> Option<(u32, u32)> {
     }
 }
 
-/// Crop to text ink (ignoring full-width rules) then centre on `head_width_dots`.
+/// Trim capture gutters; centre only when the ink band is narrower than the head.
 pub fn center_content_on_head(bitmap: MonoBitmap, head_width_dots: u32) -> MonoBitmap {
-    let cropped = if let Some((left, right)) = content_ink_column_bounds(&bitmap) {
-        crop_columns(bitmap, left, right)
-    } else {
-        trim_trailing_blank_columns(trim_leading_blank_columns(bitmap))
-    };
-    pad_bitmap_to_head_centered(cropped, head_width_dots)
+    let trimmed = trim_trailing_blank_columns(trim_leading_blank_columns(bitmap));
+    if trimmed.width >= head_width_dots {
+        return pad_bitmap_to_head(trimmed, head_width_dots);
+    }
+    pad_bitmap_to_head_centered(trimmed, head_width_dots)
 }
 
 fn crop_columns(bitmap: MonoBitmap, left: u32, right: u32) -> MonoBitmap {
@@ -631,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_is_72mm_and_payload_centres_on_80mm_roll() {
+    fn layout_and_payload_both_use_576_dot_band_on_80mm() {
         for printer in [
             "Black Copper POS-80",
             "BlackCopper BC-96AC",
@@ -644,7 +641,7 @@ mod tests {
                 (72, 576),
                 "{printer}"
             );
-            assert_eq!(payload_width_dots(80, printer), 640, "{printer}");
+            assert_eq!(payload_width_dots(80, printer), 576, "{printer}");
         }
         assert_eq!(
             paper_geometry_for_printer(58, "Black Copper POS-80"),
@@ -654,27 +651,13 @@ mod tests {
     }
 
     #[test]
-    fn center_content_ignores_full_width_rules_when_finding_bounds() {
-        // 32-wide canvas: full-width rule row, then 8 dots of text offset left (cols 2..10).
-        let mut luma = vec![255u8; 32 * 2];
-        for x in 0..32 {
-            luma[x] = 0; // rule row
-        }
-        for x in 2..10 {
-            luma[32 + x] = 0; // text row
-        }
-        let bitmap = pack_luma(32, 2, &luma, 32, BLACK_THRESHOLD);
-        let centered = center_content_on_head(bitmap, 32);
-        assert_eq!(centered.width, 32);
-        // 8 dots centred in 32 → cols 12..20 on the text row.
-        let row_stride = ((centered.width + 7) / 8) as usize;
-        let text_row = row_stride; // row 1
-        for x in 0..32u32 {
-            let byte = text_row + (x / 8) as usize;
-            let mask = 0x80u8 >> (x % 8);
-            let ink = centered.bits[byte] & mask != 0;
-            assert_eq!(ink, (12..20).contains(&x), "text col {x}");
-        }
+    fn center_content_does_not_pad_when_capture_matches_head_width() {
+        // Full-width 576-dot capture must stay left-aligned — no 640-dot inset.
+        let luma = vec![0u8; 576];
+        let bitmap = pack_luma(576, 1, &luma, 576, BLACK_THRESHOLD);
+        let out = center_content_on_head(bitmap, 576);
+        assert_eq!(out.width, 576);
+        assert_eq!(out.bits, vec![0xff; 72]); // one solid row, 576 dots
     }
 
     #[test]

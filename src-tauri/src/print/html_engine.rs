@@ -229,7 +229,7 @@ fn render_and_print(
 /// Render the receipt at the printer's dot pitch and turn it into an ESC/POS bit
 /// image. This is the path that avoids driver page sizes entirely.
 fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Result<Vec<u8>> {
-    // Wide POS-80 heads raster at the full 80mm roll; Bixolon/Epson stay on 72mm.
+    // Every 80mm head lays out at the 72mm / 576-dot printable band.
     let (layout_mm, width_dots) = escpos_raster::paper_geometry_for_printer(paper_mm, printer);
     let scale = escpos_raster::rasterization_scale(layout_mm, width_dots);
     let payload_width = escpos_raster::payload_width_dots(paper_mm, printer);
@@ -639,7 +639,7 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
       el.style.setProperty('padding-top','0','important');
       // Leave air under Finvoroo branding so the cut is not flush with the logo.
       el.style.setProperty('padding-bottom', mm >= 70 ? '3mm' : '2mm', 'important');
-      var pad = mm >= 70 ? '1.5mm' : '2mm';
+      var pad = mm >= 70 ? '1mm' : '2mm';
       el.style.setProperty('padding-left', pad, 'important');
       el.style.setProperty('padding-right', pad, 'important');
     }}
