@@ -29,9 +29,10 @@ pub fn paper_geometry(paper_mm: u32) -> (u32, u32) {
     if paper_mm <= 58 {
         (48, 384)
     } else {
-        // Conservative 68mm band on 80mm rolls — fits every common ESC/POS head
-        // (Bixolon 576-dot, Black Copper / Xprinter 640-dot) when centred below.
-        (68, 544)
+        // Classic 72mm / 576-dot printable band. Wide 640-dot heads (Black Copper,
+        // Xprinter, generic POS-80) then centre this band in a 640-dot payload so
+        // gutters stay equal and the ticket fills the roll.
+        (72, 576)
     }
 }
 
@@ -79,18 +80,28 @@ pub fn is_wide_80mm_left_align_head(printer: &str) -> bool {
 
 /// Geometry for the named printer.
 ///
-/// Layout is always the classic printable band (72mm / 576 on 80mm paper) so
-/// type size matches Bixolon. Wide left-align heads then get that band *centred*
-/// inside a 640-dot payload in [`crate::print::html_engine`] — filling to 640
-/// left-aligned still left a large empty strip on Black Copper paper.
-pub fn paper_geometry_for_printer(paper_mm: u32, _printer: &str) -> (u32, u32) {
-    paper_geometry(paper_mm)
+/// Bixolon / Epson / Star use the classic 72mm (576-dot) band. Every other
+/// common 80mm POS head (Black Copper, Xprinter, Rongta, generic POS-80) gets
+/// the full 80mm (640-dot) roll width so the ticket fills the paper instead of
+/// sitting as a narrow centred strip with huge side gutters.
+pub fn paper_geometry_for_printer(paper_mm: u32, printer: &str) -> (u32, u32) {
+    if paper_mm <= 58 {
+        return paper_geometry(paper_mm);
+    }
+    if is_narrow_band_80mm_head(printer) {
+        (72, 576)
+    } else {
+        (80, 640)
+    }
 }
 
 /// ESC/POS payload width for the printer. Every 80mm roll uses the full 640-dot
 /// canvas so the layout band is centred with equal gutters on all brands.
-pub fn payload_width_dots(paper_mm: u32, _printer: &str) -> u32 {
+pub fn payload_width_dots(paper_mm: u32, printer: &str) -> u32 {
     if paper_mm > 58 {
+        if is_narrow_band_80mm_head(printer) {
+            return 576;
+        }
         return 640;
     }
     paper_geometry(paper_mm).1
@@ -544,7 +555,7 @@ mod tests {
     #[test]
     fn geometry_uses_printable_width_not_roll_width() {
         assert_eq!(paper_geometry(58), (48, 384));
-        assert_eq!(paper_geometry(80), (68, 544));
+        assert_eq!(paper_geometry(80), (72, 576));
     }
 
     #[test]
@@ -552,16 +563,22 @@ mod tests {
         for printer in [
             "Black Copper POS-80",
             "BlackCopper BC-96AC",
-            "Bixolon SRP-350plusIII",
-            "Epson TM-T88VI",
             "Xprinter XP-N160II",
         ] {
             assert_eq!(
                 paper_geometry_for_printer(80, printer),
-                (68, 544),
+                (80, 640),
                 "{printer}"
             );
             assert_eq!(payload_width_dots(80, printer), 640, "{printer}");
+        }
+        for printer in ["Bixolon SRP-350plusIII", "Epson TM-T88VI"] {
+            assert_eq!(
+                paper_geometry_for_printer(80, printer),
+                (72, 576),
+                "{printer}"
+            );
+            assert_eq!(payload_width_dots(80, printer), 576, "{printer}");
         }
         assert_eq!(
             paper_geometry_for_printer(58, "Black Copper POS-80"),

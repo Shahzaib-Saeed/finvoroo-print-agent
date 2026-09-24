@@ -229,10 +229,8 @@ fn render_and_print(
 /// Render the receipt at the printer's dot pitch and turn it into an ESC/POS bit
 /// image. This is the path that avoids driver page sizes entirely.
 fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Result<Vec<u8>> {
-    // Layout always uses the classic printable band (72mm/576 on 80mm) so type
-    // size matches Bixolon. Wide left-align heads then centre that band in a
-    // 640-dot payload — equal gutters left/right on Black Copper paper.
-    let (layout_mm, width_dots) = escpos_raster::paper_geometry(paper_mm);
+    // Wide POS-80 heads raster at the full 80mm roll; Bixolon/Epson stay on 72mm.
+    let (layout_mm, width_dots) = escpos_raster::paper_geometry_for_printer(paper_mm, printer);
     let scale = escpos_raster::rasterization_scale(layout_mm, width_dots);
     let payload_width = escpos_raster::payload_width_dots(paper_mm, printer);
     let trailing_rows = if paper_mm > 58 {
@@ -290,11 +288,12 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Resul
     let bitmap = escpos_raster::trim_leading_blank_rows(bitmap);
     let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, 4);
     let bitmap = escpos_raster::append_blank_rows(bitmap, trailing_rows);
-    let bitmap = if paper_mm > 58 {
-        // One path for every 80mm brand: crop to ink, centre in 640-dot payload.
-        escpos_raster::center_content_on_head(bitmap, payload_width)
+    // When capture width already matches the head payload, send as-is. Otherwise
+    // centre the band (legacy 72mm capture on a 640-dot wide head).
+    let bitmap = if bitmap.width >= payload_width {
+        escpos_raster::pad_bitmap_to_head(bitmap, payload_width)
     } else {
-        escpos_raster::pad_bitmap_to_head(bitmap, width_dots)
+        escpos_raster::pad_bitmap_to_head_centered(bitmap, payload_width)
     };
     Ok(escpos_raster::escpos_payload_with_cut_feed(
         &bitmap,
@@ -644,8 +643,8 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     if (el.classList && el.classList.contains('thermal-receipt-body')) {{
       el.style.setProperty('padding-top','0','important');
       // Leave air under Finvoroo branding so the cut is not flush with the logo.
-      el.style.setProperty('padding-bottom', mm >= 80 ? '4mm' : '2mm', 'important');
-      var pad = mm >= 80 ? '3mm' : (mm >= 72 ? '3mm' : '2mm');
+      el.style.setProperty('padding-bottom', mm >= 70 ? '3mm' : '2mm', 'important');
+      var pad = mm >= 70 ? '1mm' : '2mm';
       el.style.setProperty('padding-left', pad, 'important');
       el.style.setProperty('padding-right', pad, 'important');
     }}
