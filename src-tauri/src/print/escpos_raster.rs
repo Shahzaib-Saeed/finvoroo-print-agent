@@ -317,11 +317,94 @@ pub fn trim_trailing_blank_columns(bitmap: MonoBitmap) -> MonoBitmap {
     }
 }
 
-/// Crop to inked columns then centre on `head_width_dots` so left-aligning
-/// heads (Black Copper, Xprinter, …) print with equal gutters like Bixolon.
+/// Rows that are mostly ink across the width (table rules, dividers) must not
+/// define the horizontal bounds — they span the full capture and block centering.
+fn is_full_width_rule_row(row: &[u8], width: u32) -> bool {
+    if width == 0 {
+        return false;
+    }
+    row_dot_count(row) * 100 >= width * 55
+}
+
+/// Left/right ink bounds using text rows only, ignoring full-width horizontal rules.
+fn content_ink_column_bounds(bitmap: &MonoBitmap) -> Option<(u32, u32)> {
+    let stride = bitmap.stride();
+    if stride == 0 || bitmap.width == 0 || bitmap.height == 0 {
+        return None;
+    }
+
+    let mut min_x: Option<u32> = None;
+    let mut max_x: Option<u32> = None;
+
+    for y in 0..bitmap.height {
+        let start = y as usize * stride;
+        let row = &bitmap.bits[start..start + stride];
+        if is_full_width_rule_row(row, bitmap.width) {
+            continue;
+        }
+
+        for x in 0..bitmap.width {
+            let byte_idx = start + (x / 8) as usize;
+            let mask = 0x80u8 >> (x % 8);
+            if bitmap.bits.get(byte_idx).map(|b| b & mask != 0).unwrap_or(false) {
+                min_x = Some(min_x.map_or(x, |m| m.min(x)));
+                max_x = Some(max_x.map_or(x, |m| m.max(x)));
+            }
+        }
+    }
+
+    match (min_x, max_x) {
+        (Some(lo), Some(hi)) if hi >= lo => Some((lo, hi + 1)),
+        _ => None,
+    }
+}
+
+/// Crop to text ink (ignoring full-width rules) then centre on `head_width_dots`.
 pub fn center_content_on_head(bitmap: MonoBitmap, head_width_dots: u32) -> MonoBitmap {
-    let cropped = trim_trailing_blank_columns(trim_leading_blank_columns(bitmap));
+    let cropped = if let Some((left, right)) = content_ink_column_bounds(&bitmap) {
+        crop_columns(bitmap, left, right)
+    } else {
+        trim_trailing_blank_columns(trim_leading_blank_columns(bitmap))
+    };
     pad_bitmap_to_head_centered(cropped, head_width_dots)
+}
+
+fn crop_columns(bitmap: MonoBitmap, left: u32, right: u32) -> MonoBitmap {
+    if left >= right || left >= bitmap.width {
+        return bitmap;
+    }
+    let right = right.min(bitmap.width);
+    let new_width = right - left;
+    if new_width == 0 {
+        return bitmap;
+    }
+    if left == 0 && new_width == bitmap.width {
+        return bitmap;
+    }
+
+    let stride = bitmap.stride();
+    let new_stride = ((new_width + 7) / 8) as usize;
+    let mut new_bits = vec![0u8; new_stride * bitmap.height as usize];
+
+    for y in 0..bitmap.height {
+        for x in left..right {
+            let src_byte = y as usize * stride + (x / 8) as usize;
+            let src_mask = 0x80u8 >> (x % 8);
+            if bitmap.bits[src_byte] & src_mask == 0 {
+                continue;
+            }
+            let dx = x - left;
+            let dst_byte = y as usize * new_stride + (dx / 8) as usize;
+            let dst_mask = 0x80u8 >> (dx % 8);
+            new_bits[dst_byte] |= dst_mask;
+        }
+    }
+
+    MonoBitmap {
+        width: new_width,
+        height: bitmap.height,
+        bits: new_bits,
+    }
 }
 
 /// Like [`pad_bitmap_to_head`], but centres a narrower capture in the head width
@@ -585,6 +668,30 @@ mod tests {
             (48, 384)
         );
         assert_eq!(payload_width_dots(58, "Black Copper POS-80"), 384);
+    }
+
+    #[test]
+    fn center_content_ignores_full_width_rules_when_finding_bounds() {
+        // 32-wide canvas: full-width rule row, then 8 dots of text offset left (cols 2..10).
+        let mut luma = vec![255u8; 32 * 2];
+        for x in 0..32 {
+            luma[x] = 0; // rule row
+        }
+        for x in 2..10 {
+            luma[32 + x] = 0; // text row
+        }
+        let bitmap = pack_luma(32, 2, &luma, 32, BLACK_THRESHOLD);
+        let centered = center_content_on_head(bitmap, 32);
+        assert_eq!(centered.width, 32);
+        // 8 dots centred in 32 → cols 12..20 on the text row.
+        let row_stride = ((centered.width + 7) / 8) as usize;
+        let text_row = row_stride; // row 1
+        for x in 0..32u32 {
+            let byte = text_row + (x / 8) as usize;
+            let mask = 0x80u8 >> (x % 8);
+            let ink = centered.bits[byte] & mask != 0;
+            assert_eq!(ink, (12..20).contains(&x), "text col {x}");
+        }
     }
 
     #[test]

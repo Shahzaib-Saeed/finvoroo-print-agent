@@ -288,13 +288,8 @@ fn render_raster(handles: &EngineHandles, paper_mm: u32, printer: &str) -> Resul
     let bitmap = escpos_raster::trim_leading_blank_rows(bitmap);
     let bitmap = escpos_raster::trim_trailing_blank_rows(bitmap, 4);
     let bitmap = escpos_raster::append_blank_rows(bitmap, trailing_rows);
-    // When capture width already matches the head payload, send as-is. Otherwise
-    // centre the band (legacy 72mm capture on a 640-dot wide head).
-    let bitmap = if bitmap.width >= payload_width {
-        escpos_raster::pad_bitmap_to_head(bitmap, payload_width)
-    } else {
-        escpos_raster::pad_bitmap_to_head_centered(bitmap, payload_width)
-    };
+    // Crop to ink then centre on the head — fixes left-heavy captures on POS-80.
+    let bitmap = escpos_raster::center_content_on_head(bitmap, payload_width);
     Ok(escpos_raster::escpos_payload_with_cut_feed(
         &bitmap,
         payload_width,
@@ -628,7 +623,10 @@ fn measure_content_height_px(webview: &ICoreWebView2, layout_mm: u32) -> Result<
     el.style.setProperty('position','static','important');
     el.style.setProperty('left','auto','important');
     el.style.setProperty('top','auto','important');
-    el.style.setProperty('margin','0','important');
+    el.style.setProperty('margin-top','0','important');
+    el.style.setProperty('margin-bottom','0','important');
+    el.style.setProperty('margin-left','auto','important');
+    el.style.setProperty('margin-right','auto','important');
     el.style.setProperty('transform','none','important');
     el.style.setProperty('visibility','visible','important');
     el.style.setProperty('display','block','important');
