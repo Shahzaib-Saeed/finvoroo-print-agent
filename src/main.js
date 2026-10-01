@@ -1,17 +1,13 @@
 const invoke = window.__TAURI__.core.invoke;
-const BUNDLED = window.FINVOROO_AGENT || { version: '1.1.25', logoSrc: '' };
+const BUNDLED = window.FINVOROO_AGENT || { version: '1.1.26' };
 
 const $ = (id) => document.getElementById(id);
 
 function applyBundledBranding() {
-  const version = BUNDLED.version || '1.1.25';
+  const version = BUNDLED.version || '1.1.26';
   $('version').textContent = `v${version}`;
   $('header-version').textContent = `v${version}`;
   document.title = `Finvoroo Print Agent v${version}`;
-  const logo = $('brand-logo');
-  if (logo && BUNDLED.logoSrc) {
-    logo.src = BUNDLED.logoSrc;
-  }
 }
 
 function setMessage(text, isError = false) {
@@ -21,7 +17,7 @@ function setMessage(text, isError = false) {
 }
 
 function applyRuntimeStatus(status, settings) {
-  const version = status?.version || BUNDLED.version || '1.1.25';
+  const version = status?.version || BUNDLED.version || '1.1.26';
   $('version').textContent = `v${version}`;
   $('header-version').textContent = `v${version}`;
   document.title = `Finvoroo Print Agent v${version}`;
@@ -36,7 +32,7 @@ function applyRuntimeStatus(status, settings) {
     noteEl.textContent = `Updated from v${previous}`;
     badgeEl.hidden = false;
   } else {
-    noteEl.textContent = 'Receipt printing · pairing · tray';
+    noteEl.textContent = 'Tray · auto-connect · silent print';
     badgeEl.hidden = true;
   }
   $('api').textContent = `127.0.0.1:${settings?.port || 17392}`;

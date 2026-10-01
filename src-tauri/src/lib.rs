@@ -91,7 +91,6 @@ async fn set_default_printer(
 async fn regenerate_token(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let mut cfg = state.config.write().await;
     cfg.token = auth::generate_token();
-    cfg.clear_pairing();
     cfg.save(&state.config_path).map_err(|e| e.to_string())?;
     Ok(cfg.token.clone())
 }

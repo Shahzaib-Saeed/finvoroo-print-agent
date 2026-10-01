@@ -1,38 +1,40 @@
-"""Generate PNG and ICO icons for the Finvoroo Print Agent from the pharmacy logo."""
+"""Generate PNG and ICO icons for Finvoroo Print Agent from the universal Finvoroo mark."""
 from __future__ import annotations
 
 import struct
-import zlib
+from io import BytesIO
 from pathlib import Path
 
 from PIL import Image
 
 AGENT_ROOT = Path(__file__).resolve().parents[1]
 ICONS = AGENT_ROOT / "src-tauri" / "icons"
-SRC_LOGO = AGENT_ROOT / "src" / "finvoroo-logo.png"
-# Canonical Finvoroo pharmacy mark used across the ERP UI.
-PHARMACY_LOGO = (
-    AGENT_ROOT.parent
-    / "React-frontend"
-    / "public"
-    / "media"
-    / "app"
-    / "pharmacy"
-    / "logo.png"
-)
+UI_LOGO = AGENT_ROOT / "src" / "finvoroo-logo.png"
+
+UNIVERSAL_LOGO_CANDIDATES = [
+    AGENT_ROOT.parent / "React-frontend" / "public" / "media" / "app" / "universal" / "logo.png",
+    AGENT_ROOT / "React-frontend" / "public" / "media" / "app" / "universal" / "logo.png",
+    AGENT_ROOT / "src" / "finvoroo-logo.png",
+]
 
 
 def load_source() -> Image.Image:
-    src = PHARMACY_LOGO if PHARMACY_LOGO.is_file() else SRC_LOGO
-    if not src.is_file():
-        raise SystemExit(f"Logo not found: tried {PHARMACY_LOGO} and {SRC_LOGO}")
+    src = next((p for p in UNIVERSAL_LOGO_CANDIDATES if p.is_file()), None)
+    if src is None:
+        raise SystemExit(
+            "Finvoroo mark not found. Expected React-frontend/public/media/app/universal/logo.png"
+        )
     img = Image.open(src).convert("RGBA")
+    side = min(img.size)
+    if img.size[0] != img.size[1]:
+        left = max(0, (img.size[0] - side) // 2)
+        top = max(0, (img.size[1] - side) // 2)
+        img = img.crop((left, top, left + side, top + side))
     print(f"Source logo: {src} ({img.size[0]}x{img.size[1]})")
     return img
 
 
-def make_square_icon(src: Image.Image, size: int, *, pad_ratio: float = 0.12) -> Image.Image:
-    """Letterbox the logo onto a square canvas (transparent), with a small inset."""
+def make_square_icon(src: Image.Image, size: int, *, pad_ratio: float = 0.1) -> Image.Image:
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     inset = max(1, int(size * pad_ratio))
     box = size - inset * 2
@@ -45,15 +47,12 @@ def make_square_icon(src: Image.Image, size: int, *, pad_ratio: float = 0.12) ->
 
 
 def png_bytes(img: Image.Image) -> bytes:
-    from io import BytesIO
-
     buf = BytesIO()
     img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
 
 def ico_from_pngs(entries: list[tuple[int, bytes]]) -> bytes:
-    """Build a multi-size ICO (PNG-compressed entries) for Windows installer + desktop."""
     count = len(entries)
     header = struct.pack("<HHH", 0, 1, count)
     offset = 6 + 16 * count
@@ -71,32 +70,20 @@ def main() -> None:
     ICONS.mkdir(parents=True, exist_ok=True)
     src = load_source()
 
-    # Keep a crisp copy next to the agent UI for brand.js embedding / window chrome.
-    ui_logo = make_square_icon(src, 256, pad_ratio=0.08)
-    ui_logo.save(SRC_LOGO, format="PNG", optimize=True)
+    ui_logo = make_square_icon(src, 256, pad_ratio=0.06)
+    ui_logo.save(UI_LOGO, format="PNG", optimize=True)
 
-    p32 = make_square_icon(src, 32, pad_ratio=0.1)
-    p48 = make_square_icon(src, 48, pad_ratio=0.1)
-    p64 = make_square_icon(src, 64, pad_ratio=0.1)
-    p128 = make_square_icon(src, 128, pad_ratio=0.1)
-    p256 = make_square_icon(src, 256, pad_ratio=0.08)
+    sizes = [32, 48, 64, 128, 256]
+    pngs = {size: make_square_icon(src, size, pad_ratio=0.08 if size <= 64 else 0.06) for size in sizes}
 
-    (ICONS / "32x32.png").write_bytes(png_bytes(p32))
-    (ICONS / "128x128.png").write_bytes(png_bytes(p128))
-    (ICONS / "icon.png").write_bytes(png_bytes(p256))
-
-    ico = ico_from_pngs(
-        [
-            (32, png_bytes(p32)),
-            (48, png_bytes(p48)),
-            (64, png_bytes(p64)),
-            (128, png_bytes(p128)),
-            (256, png_bytes(p256)),
-        ]
+    (ICONS / "32x32.png").write_bytes(png_bytes(pngs[32]))
+    (ICONS / "128x128.png").write_bytes(png_bytes(pngs[128]))
+    (ICONS / "icon.png").write_bytes(png_bytes(pngs[256]))
+    (ICONS / "icon.ico").write_bytes(
+        ico_from_pngs([(s, png_bytes(pngs[s])) for s in sizes])
     )
-    (ICONS / "icon.ico").write_bytes(ico)
     print(f"Wrote icons in {ICONS}")
-    print(f"Wrote UI logo {SRC_LOGO}")
+    print(f"Wrote UI logo {UI_LOGO}")
 
 
 if __name__ == "__main__":

@@ -8,51 +8,50 @@
   </head>
   <body>
     <main class="shell">
-      <header>
-        <img class="brand-logo" id="brand-logo" width="44" height="44" alt="Finvoroo" />
+      <header class="hero">
+        <img class="brand-logo" id="brand-logo" src="finvoroo-logo.png" width="52" height="52" alt="Finvoroo" />
         <div class="brand-copy">
           <div class="brand-title-row">
             <h1>Finvoroo Print Agent</h1>
             <span class="brand-version" id="header-version">v—</span>
           </div>
-          <p class="muted">Silent local printing for Finvoroo ERP</p>
+          <p class="hero-tagline">Silent receipts &amp; labels on this PC</p>
         </div>
       </header>
 
       <section class="card card--version">
         <div class="version-head">
           <div>
-            <p class="version-kicker">Print Agent version</p>
+            <p class="version-kicker">Installed version</p>
             <div class="version-current">
               <strong id="version">—</strong>
-              <span class="version-badge" id="version-badge" hidden>New</span>
+              <span class="version-badge" id="version-badge" hidden>Updated</span>
             </div>
           </div>
           <p class="version-note muted" id="version-note"></p>
         </div>
         <div class="version-grid">
           <div class="version-stat">
-            <span class="version-stat-label">On this PC</span>
+            <span class="version-stat-label">This install</span>
             <strong id="installed-version">—</strong>
           </div>
           <div class="version-stat">
-            <span class="version-stat-label">Previous install</span>
+            <span class="version-stat-label">Previous</span>
             <strong id="previous-version">—</strong>
           </div>
         </div>
-        <p class="version-hint muted">
-          You should see the Finvoroo logo above and <strong>v1.1.19</strong> here. If not, run the latest
-          <strong>FinvorooPrintAgent-Setup.exe</strong> installer on this PC.
+        <p class="version-hint muted" id="version-hint">
+          Keep this app running in the tray. Finvoroo Desktop or your browser connects automatically — no pairing code for normal use.
         </p>
       </section>
 
-      <section class="card">
+      <section class="card card--status">
         <div class="row">
           <span>Status</span>
-          <strong id="status-label">Starting…</strong>
+          <strong id="status-label" class="status-pill">Starting…</strong>
         </div>
         <div class="row">
-          <span>API</span>
+          <span>Local API</span>
           <strong id="api">127.0.0.1:17392</strong>
         </div>
         <div class="row">
@@ -62,31 +61,8 @@
       </section>
 
       <section class="card">
-        <h2>Pair with Finvoroo</h2>
-        <p class="muted">
-          Pair once on this PC. After that, Finvoroo (website or Desktop) reconnects automatically — even if the internet drops. Only use a new code if you click Regenerate token.
-        </p>
-        <div class="pin-box">
-          <strong id="pair-code">------</strong>
-          <span class="muted" id="pair-ttl"></span>
-        </div>
-        <button type="button" class="primary" id="issue-pin">Show pairing code</button>
-      </section>
-
-      <section class="card">
-        <h2>Installation token</h2>
-        <p class="muted">
-          Advanced: paste this token only if pairing is unavailable. It never leaves this computer.
-        </p>
-        <div class="token-box">
-          <code id="token">loading…</code>
-          <button type="button" id="copy-token">Copy</button>
-        </div>
-        <button type="button" class="ghost" id="regen-token">Regenerate token</button>
-      </section>
-
-      <section class="card">
         <h2>Printers</h2>
+        <p class="muted">Choose the default printer for Finvoroo receipts and labels on this till.</p>
         <label class="field">
           <span>Default printer</span>
           <select id="printers">
@@ -94,11 +70,28 @@
           </select>
         </label>
         <div class="actions">
-          <button type="button" id="refresh">Refresh printers</button>
+          <button type="button" id="refresh">Refresh</button>
           <button type="button" class="primary" id="test-print">Test print</button>
         </div>
-        <p class="muted" id="message"></p>
+        <p class="muted message" id="message"></p>
       </section>
+
+      <details class="card card--advanced">
+        <summary>Advanced — pairing &amp; token</summary>
+        <p class="muted">
+          Only needed if you regenerated the installation token or IT moved this PC. Finvoroo reconnects automatically after the agent is installed.
+        </p>
+        <div class="pin-box">
+          <strong id="pair-code">------</strong>
+          <span class="muted" id="pair-ttl"></span>
+        </div>
+        <button type="button" class="primary" id="issue-pin">Show pairing code</button>
+        <div class="token-box">
+          <code id="token">loading…</code>
+          <button type="button" id="copy-token">Copy</button>
+        </div>
+        <button type="button" class="ghost" id="regen-token">Regenerate token</button>
+      </details>
     </main>
     <script src="brand.js"></script>
     <script src="main.js"></script>

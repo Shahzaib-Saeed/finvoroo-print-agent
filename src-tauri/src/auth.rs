@@ -60,10 +60,22 @@ pub fn origins_match_for_reconnect(expected: &str, provided: &str) -> bool {
 }
 
 pub fn origin_is_allowed(origin: &str) -> bool {
+    origin_is_allowed_with_extras(origin, &[])
+}
+
+/// Finvoroo Desktop shell (embedded axum on 127.0.0.1:47391).
+pub fn is_finvoroo_desktop_shell(origin: &str) -> bool {
+    matches!(
+        normalize_origin_key(origin),
+        Some((host, port)) if host == "localhost" && port == 47391
+    )
+}
+
+pub fn origin_is_allowed_with_extras(origin: &str, extra_hosts: &[String]) -> bool {
     let Ok(url) = http::Uri::try_from(origin.trim()) else {
         return false;
     };
-    let host = url.host().unwrap_or("");
+    let host = url.host().unwrap_or("").to_ascii_lowercase();
     let scheme = url.scheme_str().unwrap_or("");
 
     if host == "localhost" || host == "127.0.0.1" || host == "::1" {
@@ -72,6 +84,22 @@ pub fn origin_is_allowed(origin: &str) -> bool {
     if host == "finvoroo.com" || host.ends_with(".finvoroo.com") {
         return scheme == "https";
     }
+
+    for extra in extra_hosts {
+        let needle = extra.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            continue;
+        }
+        let matches = if needle.starts_with('.') {
+            host == needle.trim_start_matches('.') || host.ends_with(needle.as_str())
+        } else {
+            host == needle || host.ends_with(&format!(".{needle}"))
+        };
+        if matches {
+            return scheme == "https" || host == "localhost" || host == "127.0.0.1";
+        }
+    }
+
     false
 }
 
@@ -128,6 +156,13 @@ mod tests {
         assert!(!origin_is_allowed("https://evil.example"));
         assert!(!origin_is_allowed("http://finvoroo.com"));
         assert!(!origin_is_allowed("https://finvoroo.com.evil.test"));
+    }
+
+    #[test]
+    fn desktop_shell_detection() {
+        assert!(is_finvoroo_desktop_shell("http://127.0.0.1:47391"));
+        assert!(is_finvoroo_desktop_shell("http://localhost:47391"));
+        assert!(!is_finvoroo_desktop_shell("http://127.0.0.1:5173"));
     }
 
     #[test]

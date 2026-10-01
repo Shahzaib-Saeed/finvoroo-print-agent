@@ -30,6 +30,9 @@ pub struct AgentConfig {
     /// Version immediately before the current install (shown after an update).
     #[serde(default)]
     pub previous_version: Option<String>,
+    /// Extra ERP hostnames (e.g. `erp.mycompany.com`) allowed to auto-connect.
+    #[serde(default)]
+    pub extra_allowed_hosts: Vec<String>,
 }
 
 impl Default for AgentConfig {
@@ -44,6 +47,7 @@ impl Default for AgentConfig {
             first_run: true,
             installed_version: None,
             previous_version: None,
+            extra_allowed_hosts: Vec::new(),
         }
     }
 }
