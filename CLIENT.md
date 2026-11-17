@@ -33,3 +33,9 @@ Install your usual Windows printer drivers first (receipt printer, laser, Zebra,
 To update, run the newer `FinvorooPrintAgent-Setup.exe`. Your pairing stays on this PC.
 
 Pair **once**. After that the agent stays paired through reboots, internet outages, and switching between the Finvoroo website and Finvoroo Desktop. You only need a new code if you click **Regenerate token** in the agent window.
+
+## Mac
+
+Download **FinvorooPrintAgent-Mac.dmg**, open it, drag *Finvoroo Print Agent* to *Applications* and open it
+(first time: right-click → **Open**). It lives in the menu bar and starts at login. Add your printer first in
+System Settings → Printers & Scanners, then pair with the 6-digit code as on Windows. Use Chrome, Edge or Firefox (not Safari).

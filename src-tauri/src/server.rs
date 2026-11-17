@@ -93,6 +93,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/pair", post(pair_handler))
         .route("/reconnect", post(reconnect_handler))
         .route("/settings", get(settings))
+        .route("/settings/printers", post(save_printer_roles))
         .layer(RequestBodyLimitLayer::new(MAX_BODY))
         .layer(cors)
         .with_state(state)
@@ -158,8 +159,73 @@ async fn settings(State(state): State<HttpState>, headers: HeaderMap) -> Respons
         "platform": std::env::consts::OS,
         "token_set": !cfg.token.is_empty(),
         "paired_origin": cfg.paired_origin,
+        // The printer for each job on this PC; its presence tells Finvoroo this agent can store them.
+        "printers": cfg.printer_roles,
     }))
     .into_response()
+}
+
+/// One field per job. Missing or null leaves that job as it is; an empty string clears it.
+#[derive(Deserialize)]
+struct PrinterRolesRequest {
+    #[serde(default)]
+    receipt: Option<String>,
+    #[serde(default)]
+    invoice: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    receipt_paper: Option<String>,
+}
+
+const MAX_PRINTER_ID_LEN: usize = 256;
+
+fn apply_role(slot: &mut Option<String>, value: Option<String>) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let value = value.trim();
+    if value.len() > MAX_PRINTER_ID_LEN {
+        return Err("Printer name is too long".into());
+    }
+    *slot = if value.is_empty() { None } else { Some(value.to_string()) };
+    Ok(())
+}
+
+async fn save_printer_roles(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<PrinterRolesRequest>,
+) -> Response {
+    if let Err(resp) = require_auth(&state, &headers).await {
+        return resp;
+    }
+    if let Some(paper) = req.receipt_paper.as_deref().map(str::trim) {
+        if !paper.is_empty() && paper != "thermal_80" && paper != "thermal_58" {
+            return error_response(StatusCode::UNPROCESSABLE_ENTITY, "receipt_paper must be thermal_80 or thermal_58");
+        }
+    }
+
+    let mut cfg = state.app.config.write().await;
+    let mut roles = cfg.printer_roles.clone();
+    for (slot, value) in [
+        (&mut roles.receipt, req.receipt),
+        (&mut roles.invoice, req.invoice),
+        (&mut roles.label, req.label),
+        (&mut roles.receipt_paper, req.receipt_paper),
+    ] {
+        if let Err(message) = apply_role(slot, value) {
+            return error_response(StatusCode::UNPROCESSABLE_ENTITY, message);
+        }
+    }
+    if roles != cfg.printer_roles {
+        cfg.printer_roles = roles;
+        if let Err(err) = cfg.save(&state.app.config_path) {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+        }
+    }
+
+    Json(serde_json::json!({ "ok": true, "printers": cfg.printer_roles })).into_response()
 }
 
 fn origin_allowed(state: &HttpState, origin: &str) -> bool {
@@ -451,6 +517,7 @@ mod tests {
             installed_version: None,
             previous_version: None,
             extra_allowed_hosts: Vec::new(),
+            printer_roles: Default::default(),
         };
         cfg.save(&config_path).unwrap();
         AppState {
@@ -478,6 +545,54 @@ mod tests {
         let body = json(res).await;
         assert_eq!(body["running"], true);
         assert!(body.get("token").is_none());
+    }
+
+    #[tokio::test]
+    async fn printer_roles_need_the_token_and_are_kept_on_the_pc() {
+        let state = test_state();
+        let token = state.config.read().await.token.clone();
+        let post = |body: &'static str, with_token: bool| {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri("/settings/printers")
+                .header("content-type", "application/json");
+            if with_token {
+                req = req.header("x-finvoroo-print-token", token.clone());
+            }
+            req.body(Body::from(body)).unwrap()
+        };
+
+        let app = router(http_state(state.clone()));
+        let res = app.oneshot(post(r#"{"receipt":"Receipt printer"}"#, false)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+        let app = router(http_state(state.clone()));
+        let res = app
+            .oneshot(post(r#"{"receipt":"Receipt printer","label":"Barcode printer","receipt_paper":"thermal_58"}"#, true))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json(res).await;
+        assert_eq!(body["printers"]["receipt"], "Receipt printer");
+        assert_eq!(body["printers"]["label"], "Barcode printer");
+        assert_eq!(body["printers"]["invoice"], serde_json::Value::Null);
+
+        // A missing field is left alone; an empty one clears it.
+        let app = router(http_state(state.clone()));
+        let res = app.oneshot(post(r#"{"label":""}"#, true)).await.unwrap();
+        let body = json(res).await;
+        assert_eq!(body["printers"]["receipt"], "Receipt printer");
+        assert_eq!(body["printers"]["label"], serde_json::Value::Null);
+        assert_eq!(body["printers"]["receipt_paper"], "thermal_58");
+
+        let app = router(http_state(state.clone()));
+        let res = app.oneshot(post(r#"{"receipt_paper":"a4"}"#, true)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Saved to disk, so a restart (or another browser) sees the same choice.
+        let saved = crate::config::AgentConfig::load_or_create(&state.config_path).unwrap();
+        assert_eq!(saved.printer_roles.receipt.as_deref(), Some("Receipt printer"));
+        assert_eq!(saved.printer_roles.label, None);
     }
 
     #[tokio::test]

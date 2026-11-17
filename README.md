@@ -117,3 +117,27 @@ npm test
 - Laravel checkout, FEFO, and journals are unchanged. The API never talks to the client printer.
 
 See [IMPLEMENTATION.md](IMPLEMENTATION.md), [UPDATER.md](UPDATER.md), and [MANUAL_TEST.md](MANUAL_TEST.md).
+
+---
+
+## macOS
+
+The same agent runs on a Mac as a **menu-bar app** (no Dock icon). It prints through CUPS, so any printer added in
+System Settings → Printers & Scanners works: thermal receipt printers (ESC/POS), Zebra (ZPL) and normal A4 printers (PDF).
+
+**Pharmacy steps:** download `FinvorooPrintAgent-Mac.dmg` from Finvoroo → open it → drag *Finvoroo Print Agent* to
+*Applications* → open it (first time: right-click → **Open** if macOS warns that it is from an unidentified developer) →
+pair with the 6-digit code exactly as on Windows. It starts at login. Use **Chrome, Edge or Firefox** — Safari blocks
+pages from talking to a local program, so Finvoroo cannot reach the agent from Safari.
+
+Differences from Windows: receipts are rendered by the Finvoroo server as ESC/POS (the Windows-only HTML engine is not
+needed), and a USB printer must first be added as a queue in System Settings (the agent lists queues, not raw devices).
+
+**Build (on a Mac):** `npm run build:mac` → universal `.app` + `.dmg` (Intel + Apple Silicon), copied to
+`dist/` and `React-frontend/public/downloads/FinvorooPrintAgent-Mac.dmg`. With `TAURI_SIGNING_PRIVATE_KEY` set it also
+produces `FinvorooPrintAgent-Mac.app.tar.gz` and adds `darwin-*` entries to `print-agent-latest.json` (the Windows entry is
+kept), so Macs auto-update like Windows. Upload the `.dmg`, the `.tar.gz` and the manifest to `app.finvoroo.com/downloads/`.
+
+**Signing:** without an Apple Developer ID (US$99/year) Gatekeeper shows the "unidentified developer" warning once.
+To remove it, set `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` before `npm run build:mac`;
+Tauri signs and notarizes automatically.

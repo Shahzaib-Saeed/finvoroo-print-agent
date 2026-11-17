@@ -62,7 +62,7 @@ async function refreshPrinters(selected) {
     for (const p of printers) {
       const opt = document.createElement('option');
       opt.value = p.id;
-      opt.textContent = `${p.name}${p.default ? ' (Windows default)' : ''} · ${p.type}`;
+      opt.textContent = `${p.name}${p.default ? ' (system default)' : ''} · ${p.type}`;
       if (selected && selected === p.id) opt.selected = true;
       if (!selected && p.default) opt.selected = true;
       select.appendChild(opt);

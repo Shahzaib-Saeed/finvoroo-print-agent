@@ -1,8 +1,8 @@
 {
   "name": "finvoroo-print-agent",
   "private": true,
-  "version": "1.1.26",
-  "description": "Finvoroo Print Agent — silent local printing for Finvoroo ERP (Windows).",
+  "version": "1.1.27",
+  "description": "Finvoroo Print Agent — silent local printing for Finvoroo ERP (Windows and macOS).",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
@@ -11,7 +11,8 @@
     "publish-installer": "node scripts/publish-installer.mjs",
     "tauri": "tauri",
     "icons": "python3 scripts/generate-icons.py",
-    "test": "cargo test --manifest-path src-tauri/Cargo.toml"
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "build:mac": "npm run icons && tauri build --target universal-apple-darwin --bundles app,dmg && node scripts/publish-mac.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.5"

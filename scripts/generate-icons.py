@@ -14,6 +14,7 @@ UI_LOGO = AGENT_ROOT / "src" / "finvoroo-logo.png"
 UNIVERSAL_LOGO_CANDIDATES = [
     AGENT_ROOT.parent / "React-frontend" / "public" / "media" / "app" / "universal" / "logo.png",
     AGENT_ROOT / "React-frontend" / "public" / "media" / "app" / "universal" / "logo.png",
+    AGENT_ROOT / "branding" / "finvoroo-mark.png",
     AGENT_ROOT / "src" / "finvoroo-logo.png",
 ]
 
@@ -82,6 +83,10 @@ def main() -> None:
     (ICONS / "icon.ico").write_bytes(
         ico_from_pngs([(s, png_bytes(pngs[s])) for s in sizes])
     )
+    # macOS: Retina PNG and a .icns. Big Sur-style icons sit inside a margin, so pad a little more.
+    mac_master = make_square_icon(src, 1024, pad_ratio=0.12)
+    (ICONS / "128x128@2x.png").write_bytes(png_bytes(mac_master.resize((256, 256), Image.Resampling.LANCZOS)))
+    mac_master.save(ICONS / "icon.icns", format="ICNS")
     print(f"Wrote icons in {ICONS}")
     print(f"Wrote UI logo {UI_LOGO}")
 

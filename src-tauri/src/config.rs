@@ -8,6 +8,24 @@ use tauri::{AppHandle, Manager};
 use crate::auth;
 use crate::DEFAULT_PORT;
 
+/// Which printer does each job on this PC, chosen in Finvoroo (Settings → Print & devices).
+///
+/// Kept in the agent, not the browser, so every browser, every Finvoroo login and Finvoroo
+/// Desktop on this PC share one setup. Values are exact printer queue names; `None` means
+/// "not chosen" and Finvoroo asks instead of guessing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrinterRoles {
+    #[serde(default)]
+    pub receipt: Option<String>,
+    #[serde(default)]
+    pub invoice: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    /// `thermal_80` or `thermal_58`.
+    #[serde(default)]
+    pub receipt_paper: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub token: String,
@@ -33,6 +51,9 @@ pub struct AgentConfig {
     /// Extra ERP hostnames (e.g. `erp.mycompany.com`) allowed to auto-connect.
     #[serde(default)]
     pub extra_allowed_hosts: Vec<String>,
+    /// Printer for each job on this PC (see [`PrinterRoles`]).
+    #[serde(default)]
+    pub printer_roles: PrinterRoles,
 }
 
 impl Default for AgentConfig {
@@ -48,6 +69,7 @@ impl Default for AgentConfig {
             installed_version: None,
             previous_version: None,
             extra_allowed_hosts: Vec::new(),
+            printer_roles: PrinterRoles::default(),
         }
     }
 }
@@ -192,6 +214,11 @@ fn salvage_config(raw: &str) -> AgentConfig {
     if let Some(at) = value.get("paired_at").and_then(|v| v.as_str()) {
         cfg.paired_at = Some(at.to_string());
     }
+    if let Some(roles) = value.get("printer_roles") {
+        if let Ok(roles) = serde_json::from_value::<PrinterRoles>(roles.clone()) {
+            cfg.printer_roles = roles;
+        }
+    }
     cfg
 }
 
@@ -223,6 +250,7 @@ mod tests {
             "extra_future_field": true
         }"#;
         let cfg = salvage_config(raw);
+        assert_eq!(cfg.printer_roles, PrinterRoles::default());
         assert_eq!(cfg.token, "abc123");
         assert_eq!(cfg.paired_origin.as_deref(), Some("https://app.finvoroo.com"));
         assert!(cfg.is_paired());

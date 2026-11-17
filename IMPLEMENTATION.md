@@ -41,7 +41,8 @@ Laravel checkout, FEFO, and journals are not involved. The agent prints PDF, HTM
 | GET | `/printers` | token | OS printer list (`name`, `systemName`, `type`) |
 | POST | `/pair` | PIN + allowed origin | One-time pairing; returns install token |
 | POST | `/print` | token | Silent print |
-| GET | `/settings` | token | Port, default printer, paired origin (no token) |
+| GET | `/settings` | token | Port, default printer, paired origin (no token), and `printers` — the printer for each job on this PC (1.1.27+) |
+| POST | `/settings/printers` | token | Save `receipt`, `invoice`, `label`, `receipt_paper` for this PC. Missing/null = unchanged, `""` = clear (1.1.27+) |
 
 ### POST /pair
 

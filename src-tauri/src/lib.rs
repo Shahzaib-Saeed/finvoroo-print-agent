@@ -4,7 +4,8 @@
 //! - Native tray app (Tauri)
 //! - Localhost-only HTTP API for the React SPA
 //! - Windows print backends: RAW/ZPL via the spooler, PDF via the printer driver
-//! - macOS/Linux compile with a stub backend so the API can be developed off Windows
+//! - macOS print backend: CUPS (`lp -o raw` for ESC/POS + ZPL, PDF through the queue)
+//! - Linux compiles with a stub backend so the API can be developed there
 
 pub mod auth;
 pub mod config;
@@ -155,6 +156,11 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // A menu-bar agent: no Dock icon and no Cmd-Tab entry, like the Windows tray.
+            // The settings window still opens from the menu-bar icon.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             let config_path = config::config_file_path(app.handle())?;
             let mut cfg = config::AgentConfig::load_or_create(&config_path)?;
             if cfg.apply_version_tracking(VERSION) {

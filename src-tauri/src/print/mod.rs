@@ -172,14 +172,10 @@ pub fn resolve_printer<'a>(
     }) {
         return Ok(p);
     }
-    if let Some(p) = printers.iter().find(|p| {
-        let name = p.name.to_ascii_lowercase();
-        name.contains(&req_lower) || req_lower.contains(&name)
-    }) {
-        return Ok(p);
-    }
+    // No "similar name" fallback: with two printers of one brand ("Xprinter USB Printer P" and
+    // "Xprinter USB Printer P (Copy 1)") it sent receipts to the label printer without a word.
     anyhow::bail!(
-        "Printer \"{}\" was not found. Click Refresh printers and choose the queue from the list.",
+        "Printer \"{}\" is not connected to this PC. Check that it is on and plugged in, or choose it again in Finvoroo → Settings → Print & devices.",
         req
     )
 }
@@ -288,5 +284,27 @@ mod tests {
             driver: None,
         }];
         assert_eq!(resolve_printer(&printers, "bc-96ac").unwrap().id, "BC-96AC");
+    }
+
+    #[test]
+    fn resolve_printer_never_swaps_to_a_similar_name() {
+        let printer = |name: &str| PrinterInfo {
+            id: name.into(),
+            name: name.into(),
+            system_name: name.into(),
+            default: false,
+            printer_type: "thermal".into(),
+            driver: None,
+        };
+        let printers = vec![printer("Xprinter USB Printer P"), printer("Xprinter USB Printer P (Copy 1)")];
+        assert_eq!(
+            resolve_printer(&printers, "Xprinter USB Printer P (Copy 1)").unwrap().id,
+            "Xprinter USB Printer P (Copy 1)"
+        );
+        // The label printer is unplugged: its queue is gone, and the receipt printer must not take the job.
+        let only_receipt = vec![printer("Xprinter USB Printer P")];
+        let err = resolve_printer(&only_receipt, "Xprinter USB Printer P (Copy 1)").unwrap_err();
+        assert!(err.to_string().contains("is not connected"));
+        assert!(resolve_printer(&only_receipt, "Xprinter").is_err());
     }
 }
